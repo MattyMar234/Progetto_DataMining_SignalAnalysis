@@ -1,0 +1,2 @@
+ssh-keygen -R [localhost]:8890  #per ricreare le chiavi
+ssh root@localhost -p 8890
