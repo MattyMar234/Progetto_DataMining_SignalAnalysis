@@ -20,6 +20,10 @@ def main():
         sample_per_window=360*10,  # 10 secondi
         sample_per_side=360*5,  # 5 secondi
     )
+    
+    print(f"Dataset di Training creato con {len(train_dataset)} campioni.")
+    
+    print(train_dataset[100])
 
 
 if __name__ == "__main__":

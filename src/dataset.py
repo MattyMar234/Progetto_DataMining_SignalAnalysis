@@ -18,12 +18,14 @@ import matplotlib.pyplot as plt
 # Q: Unknown beat ('Q', '/') -> 4
 # Ignoriamo altri simboli di annotazione non relativi ai battiti.
 AAMI_CLASSES = {
-    'N': 0, 'L': 0, 'R': 0, 'B': 0,
-    'A': 1, 'a': 1, 'J': 1, 'S': 1,
+    'N': 0, 'L': 0, 'R': 0, 'B': 0, '|': 0,
+    'A': 1, 'a': 1, 'J': 1, 'S': 1, 'j': 1,
     'V': 2, 'E': 2,
     'F': 3,
-    'Q': 4, '/': 4,
-    '+': 5
+    'Q': 4, '/': 4, '~': 4,
+    '+': 5, '\"': 5,
+    'X': 6, 'x' : 6,
+
 }
 
 
@@ -39,10 +41,11 @@ class SampleType(Enum):
     VEB = auto()
     FUSION = auto()
     UNKNOWN = auto()
+    NOSIE = auto() # Per campioni che non possono essere classificati
     START_SEQUENZE = auto() # Per campioni che non possono essere classificati
     
     @classmethod
-    def to_Label(type: str) -> 'SampleType':
+    def to_Label(cls, type: str) -> 'SampleType':
         
         idx = AAMI_CLASSES.get(type, -1)
         
@@ -59,6 +62,8 @@ class SampleType(Enum):
                 return SampleType.UNKNOWN
             case 5:
                 return SampleType.START_SEQUENZE
+            case 6:
+                return SampleType.NOSIE
             case _:
                 raise ValueError(f"Tipo di battito sconosciuto: {type}. Non può essere convertito in SampleType.")
 
@@ -84,28 +89,22 @@ class MITBIHDataset(Dataset):
     
     _FILE_CHEKED: bool = False
     _DATASET_PATH: None | str = None
-    _ALL_RECORDS: list = ['101', '106', '108', '109', '112', '114', '115', '116', '118', '119',
-            '122', '124', '201', '203', '205', '207', '208', '209', '215', '220', '223', '230',
-            '100', '103', '105', '107', '111', '113', '117', '123', '200', '202', '210', '212', 
-            '213', '214', '217', '219', '221', '222', '228', '231', '232', '233', '234', '104',
-            '121'
-        ]
     
-    # _MLII_MAX_VALUE: int = 0
-    # _MLII_MIN_VALUE: int = 0
-    # _V1_MAX_VALUE: int = 0
-    # _V1_MIN_VALUE: int = 0
-    # _V2_MAX_VALUE: int = 0
-    # _V2_MIN_VALUE: int = 0
-    # _V3_MAX_VALUE: int = 0
-    # _V3_MIN_VALUE: int = 0
-    # _V4_MAX_VALUE: int = 0
-    # _V4_MIN_VALUE: int = 0
-    # _V5_MAX_VALUE: int = 0
-    # _V5_MIN_VALUE: int = 0
+    _RECORDS_MLII_V5_V2 = ['104', '102']
+    _RECORDS_MLII_V1 = ['101','105','106', '107', '108', '109','111', '112','113','115', '116','118','119','121','122',
+                        '200', '201', '202', '203', '205', '207', '208', '209', '210', '212','213', '214','215','217',
+                        '219', '220', '221', '222', '223', '228', '230','231','232','233','234']
+    _RECORDS_MLII_V2 = ['117', '103']
+    _RECORDS_MLII_V4 = ['124']
+    _RECORDS_MLII_V5 = ['100','114','123']
     
+    _ALL_RECORDS: list = _RECORDS_MLII_V1
+            
+    
+
+    _RISOLUZIONE_ADC: int = 11
     _MIN_VALUE: int = 0
-    _MAX_VALUE: int = 0
+    _MAX_VALUE: int = 2**_RISOLUZIONE_ADC - 1
     _MAX_SAMPLE_NUM: int = 650000
     
     
@@ -117,13 +116,19 @@ class MITBIHDataset(Dataset):
         """
         Imposta il percorso del dataset.
         """
-        if not os.path.isdir(path):
-            raise FileNotFoundError(f"La directory specificata non esiste: {path}")
+        
+        if cls._FILE_CHEKED and cls._DATASET_PATH == path:
+            print(f"Il percorso del dataset è già impostato su: {cls._DATASET_PATH}")
+            return
         
         cls._DATASET_PATH = path
         cls._FILE_CHEKED = False
+        
+        if not os.path.isdir(path):
+            raise FileNotFoundError(f"La directory specificata non esiste: {path}")
         print(f"Percorso del dataset impostato su: {cls._DATASET_PATH}")
         
+ 
 
         # Controlla se i file CSV e TXT esistono
         for record_name in cls._ALL_RECORDS:
@@ -135,74 +140,6 @@ class MITBIHDataset(Dataset):
             if not os.path.exists(txt_filepath):
                 raise FileNotFoundError(f"File TXT non trovato: {txt_filepath}")
 
-        MLII_max_values = []
-        MLII_min_values = []
-        v1_max_values = []
-        v1_min_values = []
-        v2_max_values = []
-        v2_min_values = []
-        v3_max_values = []
-        v3_min_values = []
-        v4_max_values = []
-        v4_min_values = []
-        v5_max_values = []
-        v5_min_values = []
-
-        for record_name in cls._ALL_RECORDS:
-            csv_filepath = os.path.join(path, f"{record_name}.csv")
-            df = pd.read_csv(csv_filepath)
-                
-            for idx, col in enumerate(df.columns):
-                #print(f"Colonna {idx}: {col}")
-                df = df.rename(columns={df.columns[idx]: df.columns[idx].replace('\'', '')}) # Rinomina la prima colonna in 'sample #'
-
-            if cls._MLII_COL in df.columns:
-                signal: torch.Tensor = torch.from_numpy(df[cls._MLII_COL].values)
-                MLII_max_values.append(signal.max().item())
-                MLII_min_values.append(signal.min().item())
-                
-            if cls._V1_COL in df.columns:
-                signal: torch.Tensor = torch.from_numpy(df[cls._V1_COL].values)
-                v1_max_values.append(signal.max().item())
-                v1_min_values.append(signal.min().item())
-            
-            if cls._V2_COL in df.columns:
-                signal: torch.Tensor = torch.from_numpy(df[cls._V2_COL].values)
-                v2_max_values.append(signal.max().item())
-                v2_min_values.append(signal.min().item())
-            
-            if cls._V3_COL in df.columns:
-                signal: torch.Tensor = torch.from_numpy(df[cls._V3_COL].values)
-                v3_max_values.append(signal.max().item())
-                v3_min_values.append(signal.min().item())
-            
-            if cls._V4_COL in df.columns:
-                signal: torch.Tensor = torch.from_numpy(df[cls._V4_COL].values)
-                v4_max_values.append(signal.max().item())
-                v4_min_values.append(signal.min().item())
-            
-            if cls._V5_COL in df.columns:
-                signal: torch.Tensor = torch.from_numpy(df[cls._V5_COL].values)
-                v5_max_values.append(signal.max().item())
-                v5_min_values.append(signal.min().item())
-            
-
-        # cls._MLII_MAX_VALUE = max(MLII_max_values)
-        # cls._MLII_MIN_VALUE = min(MLII_min_values)
-        # cls._V1_MAX_VALUE = max(v1_max_values)
-        # cls._V1_MIN_VALUE = min(v1_min_values)
-        # cls._V2_MAX_VALUE = max(v2_max_values)
-        # cls._V2_MIN_VALUE = min(v2_min_values)
-        # cls._V3_MAX_VALUE = max(v3_max_values)
-        # cls._V3_MIN_VALUE = min(v3_min_values)
-        # cls._V4_MAX_VALUE = max(v4_max_values)
-        # cls._V4_MIN_VALUE = min(v4_min_values)
-        # cls._V5_MAX_VALUE = max(v5_max_values)
-        # cls._V5_MIN_VALUE = min(v5_min_values)
-        
-        cls._MIN_VALUE = min(MLII_min_values + v1_min_values + v2_min_values + v3_min_values + v4_min_values + v5_min_values)
-        cls._MAX_VALUE = max(MLII_max_values + v1_max_values + v2_max_values + v3_max_values + v4_max_values + v5_max_values)
-        
         cls._FILE_CHEKED = True
         
     
@@ -250,11 +187,9 @@ class MITBIHDataset(Dataset):
         print(f"Caricamento dati per la modalità {self.mode.name} dai record: {self.record_list}")
         
         
-        
+    
         self._signals_dict = {} # Dizionario per memorizzare i segnali
-        self._windows: List[Dict[str, any]] = [] # Lista per memorizzare le finestre
-        self._all_records: List[str] = train_records + validation_records + test_records
-
+        self._windows: Dict[int, Dict[str, any]] = {} 
         self._load_data()
         
     def plot_windows(self):
@@ -282,6 +217,7 @@ class MITBIHDataset(Dataset):
 
     def _load_data(self):
         
+        windows_counter:int = 0
 
         """Carica i dati dai record selezionati (CSV per segnale, TXT per annotazioni)."""
         for record_name in self.record_list:
@@ -296,31 +232,57 @@ class MITBIHDataset(Dataset):
             for idx, col in enumerate(df.columns):
                 df = df.rename(columns={df.columns[idx]: df.columns[idx].replace('\'', '')}) # Rinomina la prima colonna in 'sample #'
 
+            signal: torch.Tensor | None = None
             
+            if MITBIHDataset._MLII_COL in df.columns:
+                signal = torch.from_numpy(df[MITBIHDataset._MLII_COL].values).unsqueeze(0)
+            
+            if MITBIHDataset._V1_COL in df.columns:
+                if signal is None:
+                    signal = torch.from_numpy(df[MITBIHDataset._V1_COL].values).unsqueeze(0)
+                else:
+                    signal = torch.cat((signal, torch.from_numpy(df[MITBIHDataset._V1_COL].values).unsqueeze(0)), dim=0)
+            
+            if MITBIHDataset._V2_COL in df.columns:
+                if signal is None:
+                    signal = torch.from_numpy(df[MITBIHDataset._V2_COL].values).unsqueeze(0)
+                else:
+                    signal = torch.cat((signal, torch.from_numpy(df[MITBIHDataset._V2_COL].values).unsqueeze(0)), dim=0)
+           
+            # if MITBIHDataset._V3_COL in df.columns:
+            #     if signal is None:
+            #         signal = torch.from_numpy(df[MITBIHDataset._V3_COL].values).unsqueeze(0)
+            #     else:
+            #         signal = torch.cat((signal, torch.from_numpy(df[MITBIHDataset._V3_COL].values).unsqueeze(0)), dim=0)
+            
+            if MITBIHDataset._V4_COL in df.columns:
+                if signal is None:
+                    signal = torch.from_numpy(df[MITBIHDataset._V4_COL].values).unsqueeze(0)
+                else:
+                    signal = torch.cat((signal, torch.from_numpy(df[MITBIHDataset._V4_COL].values).unsqueeze(0)), dim=0)
+            
+            if MITBIHDataset._V5_COL in df.columns:
+                if signal is None:
+                    signal = torch.from_numpy(df[MITBIHDataset._V5_COL].values).unsqueeze(0)
+                else:
+                    signal = torch.cat((signal, torch.from_numpy(df[MITBIHDataset._V5_COL].values).unsqueeze(0)), dim=0)
+            
+           
 
-            t1 = torch.from_numpy(df[MITBIHDataset._MLII_COL].values) if self._MLII_COL in df.columns else torch.zeros(MITBIHDataset._MAX_SAMPLE_NUM)
-            t2 = torch.from_numpy(df[MITBIHDataset._V1_COL].values) if self._V1_COL in df.columns else torch.zeros(MITBIHDataset._MAX_SAMPLE_NUM)
-            t3 = torch.from_numpy(df[MITBIHDataset._V2_COL].values) if self._V2_COL in df.columns else torch.zeros(MITBIHDataset._MAX_SAMPLE_NUM)
-            t4 = torch.from_numpy(df[MITBIHDataset._V3_COL].values) if self._V3_COL in df.columns else torch.zeros(MITBIHDataset._MAX_SAMPLE_NUM)
-            t5 = torch.from_numpy(df[MITBIHDataset._V4_COL].values) if self._V4_COL in df.columns else torch.zeros(MITBIHDataset._MAX_SAMPLE_NUM)
-            t6 = torch.from_numpy(df[MITBIHDataset._V5_COL].values) if self._V5_COL in df.columns else torch.zeros(MITBIHDataset._MAX_SAMPLE_NUM)
+            # Normalizza il segnale
+            signal = signal.float() 
+            signal = (signal - MITBIHDataset._MIN_VALUE) / (MITBIHDataset._MAX_VALUE - MITBIHDataset._MIN_VALUE) 
             
-            signal: torch.Tensor = torch.cat(
-                (t1.unsqueeze(0), t2.unsqueeze(0), t3.unsqueeze(0), t4.unsqueeze(0), t5.unsqueeze(0), t6.unsqueeze(0)), 
-                dim=0
-            ) 
-
-            # La colonna 'sample #' nel CSV corrisponde all'indice dell'array NumPy
-             # Estrai i valori della colonna come array NumPy
-            signal = signal.float() # Assicurati che sia float32
-            signal = (signal - MITBIHDataset._MIN_VALUE) / (MITBIHDataset._MLII_MAX_VALUE - MITBIHDataset._MLII_MIN_VALUE) # Normalizza il segnale
+          
             
-            self._signals_dict[record_name] = signal # Salva il segnale per il record corrente
+            # Salva il segnale per il record corrente
+            self._signals_dict[record_name] = signal 
             
             
-            windows_number = int((len(signal) - self.samples_per_window) / self.samples_per_side) + 1
+            windows_number = int((len(signal[0]) - self.samples_per_window) / self.samples_per_side) + 1
             record_windows: list = []
             
+           
             #creazione delle finestre
             for i in range(windows_number):
                 start = i * self.samples_per_side
@@ -330,7 +292,7 @@ class MITBIHDataset(Dataset):
                 window = {
                     'start': start,
                     'end': end,
-                    'signal': signal[start:end],
+                    'signal': signal[:, start:end],
                     'record_name': record_name,
                     'beat_number': 0,
                     'BPM': 0,
@@ -340,6 +302,8 @@ class MITBIHDataset(Dataset):
                 }
                 
                 record_windows.append(window)
+            
+            #print(f"Record {record_name} ha {len(record_windows)} finestre.")
             
             window_pointer: int = 0
             current_window = record_windows[window_pointer]
@@ -385,7 +349,7 @@ class MITBIHDataset(Dataset):
                             current_window['beat_time'].append(time)
                             
                         
-                        case SampleType.UNKNOWN | SampleType.START_SEQUENZE:
+                        case SampleType.UNKNOWN | SampleType.START_SEQUENZE | SampleType.NOSIE:
                             pass
                         
                         case _:
@@ -400,69 +364,14 @@ class MITBIHDataset(Dataset):
                         #         aux = beat_symbol_raw
                     
       
+            for i in range(len(record_windows)):
+                current_window = record_windows[i]
+                current_window['BPM'] = (current_window['beat_number'] / (current_window['end'] - current_window['start'])) * 60
+                #print(f"Finestra {i} BPM: {current_window['BPM']}")
                 
-            self._windows.extend(record_windows) 
-            print(record_windows)
-            return
-                
-            #     print(f"  Elaborazione record {record_name} (lunghezza segnale: {len(signal)}, battiti validi: {len(annotations)})")
-
-            #     # --- Processa le annotazioni e crea segmenti ---
-            #     for samp, symbol in annotations:
-            #         label = AAMI_CLASSES[symbol]
-
-            #         # Definisci la finestra del segmento centrata sul battito
-            #         start_index = samp - self.samples_per_side
-            #         end_index = samp + self.samples_per_side
-
-            #         # Gestisci i bordi del segnale (inizio/fine array)
-            #         # clamp gli indici di slicing all'interno dei limiti dell'array
-            #         slice_start = max(0, start_index)
-            #         slice_end = min(len(signal), end_index)
-
-            #         # Calcola quanto padding è necessario
-            #         pad_before = max(0, start_index - slice_start) # sarà > 0 solo se start_index < 0
-            #         pad_after = max(0, end_index - slice_end)       # sarà > 0 solo se end_index > len(signal)
-
-            #         # Estrai il segmento dall'array NumPy del segnale
-            #         segment = signal[slice_start:slice_end].astype(np.float32) # Assicurati sia float32
-
-            #         # Applica padding se necessario
-            #         if pad_before > 0 or pad_after > 0:
-            #              # Utilizza np.pad con la lunghezza esatta desiderata
-            #              # Calcola la lunghezza attuale e quanto manca per arrivare a segment_length
-            #              current_length = len(segment)
-            #              total_padding_needed = self.segment_length - current_length
-            #              pad_before_actual = total_padding_needed // 2 # Distribuisci il padding
-            #              pad_after_actual = total_padding_needed - pad_before_actual
-
-            #              # Questa logica di padding è più robusta per garantire la lunghezza esatta
-            #              # rispetto a calcolare pad_before/after dai bordi originali
-            #              segment = np.pad(segment, (pad_before_actual, pad_after_actual), 'constant', constant_values=0)
-
-
-            #         # Assicurati che la lunghezza del segmento sia corretta
-            #         if len(segment) != self.segment_length:
-            #              print(f"ERRORE CRITICO: Lunghezza segmento errata per record {record_name}, battito a campione {samp}. Attesa: {self.segment_length}, Trovata: {len(segment)}. Salto campione.")
-            #              continue # Salta questo campione problematico
-
-            #         # Normalizzazione del segmento (es. Z-score per segmento)
-            #         # Questo può aiutare la convergenza del modello
-            #         std_val = np.std(segment)
-            #         # Evita divisione per zero se il segmento è costante (molto piatto)
-            #         if std_val < 1e-8:
-            #             segment = segment - np.mean(segment) # Solo centraggio
-            #         else:
-            #              segment = (segment - np.mean(segment)) / std_val
-
-            #         self.data.append((segment, label))
-
-            # except Exception as e:
-            #     print(f"Errore generico durante il caricamento o l'elaborazione del record {record_name}: {e}")
-            #     # Continua con il prossimo record
-
-        print(f"Caricamento completato. Numero totale di campioni per {self.mode.name}: {len(self.data)}")
-
+                self._windows[windows_counter] = current_window
+                windows_counter += 1
+           
     def _formatTime(self, time: str) -> float:        
         parts = time.split(':')
         split = parts[-1].split('.')
@@ -480,7 +389,7 @@ class MITBIHDataset(Dataset):
 
     def __len__(self) -> int:
         """Restituisce il numero totale di campioni nel dataset."""
-        return len(self.data)
+        return len(self._windows.keys())
 
     def __getitem__(self, idx: int) -> Tuple[torch.Tensor, torch.Tensor]:
         """
@@ -497,16 +406,18 @@ class MITBIHDataset(Dataset):
                                               per essere compatibile con layer convoluzionali
                                               che si aspettano (canali, lunghezza).
         """
-        segment, label = self.data[idx]
+        # segment, label = self.data[idx]
 
-        # Converti in tensori PyTorch
-        segment_tensor = torch.tensor(segment, dtype=torch.float32)
-        label_tensor = torch.tensor(label, dtype=torch.long) # Le etichette sono tipicamente LongTensor per la classificazione
+        # # Converti in tensori PyTorch
+        # segment_tensor = torch.tensor(segment, dtype=torch.float32)
+        # label_tensor = torch.tensor(label, dtype=torch.long) # Le etichette sono tipicamente LongTensor per la classificazione
 
-        # Aggiungi una dimensione per i canali (necessario per molti modelli come le CNN)
-        # (segment_length,) -> (1, segment_length)
-        segment_tensor = segment_tensor.unsqueeze(0)
+        # # Aggiungi una dimensione per i canali (necessario per molti modelli come le CNN)
+        # # (segment_length,) -> (1, segment_length)
+        # segment_tensor = segment_tensor.unsqueeze(0)
 
-        return segment_tensor, label_tensor
+        # return segment_tensor, label_tensor
+        
+        return self._windows[idx]
 
 
