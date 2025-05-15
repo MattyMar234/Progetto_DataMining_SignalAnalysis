@@ -1,3 +1,4 @@
+from sklearn.model_selection import train_test_split
 import torch
 import wfdb
 import numpy as np
@@ -43,7 +44,7 @@ class SampleType(Enum):
     NORMAL = "N L R B |"
     SVEB = "A a J j S"
     VEB = "V E ! e"
-    FUSION = "F"
+    FUSION = "F f"
     UNKNOWN = "Q / ~"
     NOISE = "X x"
     START_NOISE = "["
@@ -95,7 +96,9 @@ class MITBIHDataset(Dataset):
     _RECORDS_MLII_V5 = ['100','114','123']
     
     _ALL_RECORDS: list = _RECORDS_MLII_V1
-            
+    _TRAINING_RECORDS: list = []
+    _VALIDATION_RECORDS: list = []
+    _TEST_RECORDS: list = []
     
 
     _RISOLUZIONE_ADC: int = 11
@@ -125,7 +128,6 @@ class MITBIHDataset(Dataset):
         print(f"Percorso del dataset impostato su: {cls._DATASET_PATH}")
         
  
-
         # Controlla se i file CSV e TXT esistono
         for record_name in cls._ALL_RECORDS:
             csv_filepath = os.path.join(path, f"{record_name}.csv")
@@ -138,8 +140,25 @@ class MITBIHDataset(Dataset):
 
         cls._FILE_CHEKED = True
         
+        
+    @classmethod
+    def init_dataset(cls) -> None:
+        assert cls._FILE_CHEKED, "files del dataset non verificati"
+        
+        train_ratio = 0.8
+        val_ratio = 0.1
+        test_ratio = 0.1
+        
+        train_indices, temp_indices = train_test_split(cls._ALL_RECORDS, test_size=(val_ratio + test_ratio), random_state=42)
+        val_indices, test_indices = train_test_split(temp_indices, test_size=(test_ratio / (val_ratio + test_ratio)), random_state=42)
+
+        cls._TRAINING_RECORDS = train_indices
+        cls._VALIDATION_RECORDS = val_indices
+        cls._TEST_RECORDS = test_indices
+        
     
-    def __init__(self, *, mode: DatasetMode, sample_rate: int = 360, sample_per_window: int = 360, sample_per_side: int = 180):
+    def __init__(self, *, mode: DatasetMode, sample_rate: int = 360, sample_per_window: int = 360, sample_per_stride: int = 180):
+        assert MITBIHDataset._FILE_CHEKED, "files del dataset non verificati"
         
         if not MITBIHDataset._DATASET_PATH:
             raise ValueError("Il percorso del dataset non è stato impostato. Usa 'setDatasetPath' per impostarlo.")
@@ -148,34 +167,17 @@ class MITBIHDataset(Dataset):
         self.mode = mode
         self.sample_rate = sample_rate
         self.samples_per_window = sample_per_window
-        self.samples_per_side = sample_per_side
-         # Normalizza il nome della colonna
-
-        # Definizione dello split dei record per training, validation e test
-        # Questo è uno split comune utilizzato nella letteratura.
-        # Usa gli stessi nomi base dei file CSV/TXT (es. '100')
-        train_records = [
-            '101', '106', '108', '109', '112', '114', '115', '116', '118', '119',
-            '122', '124', '201', '203', '205', '207', '208', '209', '215', '220',
-            '223', '230'
-        ]
-        validation_records = [
-            '100', '103', '105', '107', '111', '113', '117', '123', '200', '202',
-            '210', '212', '213', '214'
-        ]
-        test_records = [
-            '217', '219', '221', '222', '228', '231', '232', '233', '234', '104',
-            '121'
-        ]
+        self.samples_per_side = sample_per_stride
+        
 
         if mode == DatasetMode.TRAINING:
-            self.record_list = train_records
+            self.record_list = MITBIHDataset._TRAINING_RECORDS
             
         elif mode == DatasetMode.VALIDATION:
-            self.record_list = validation_records
+            self.record_list = MITBIHDataset._VALIDATION_RECORDS
             
         elif mode == DatasetMode.TEST:
-            self.record_list = test_records
+            self.record_list = MITBIHDataset._TEST_RECORDS
             
         else:
             raise ValueError(f"Modalità non valida: {mode}")
@@ -496,6 +498,7 @@ class MITBIHDataset(Dataset):
                         
         
                 for i in range(len(record_windows)):
+                    bpm: float = 0
                     current_window = record_windows[i]
                     #current_window['BPM'] = current_window['beat_number'] * ((60*self.sample_rate)/self.samples_per_window) 
                     
@@ -505,16 +508,17 @@ class MITBIHDataset(Dataset):
                         rr_intervals = [beat_times[i+1] - beat_times[i] for i in range(len(beat_times)-1)]
                         mean_rr = np.mean(rr_intervals)
                         if mean_rr > 0:
-                            current_window['BPM'] = 60.0 / mean_rr
+                            bpm = 60.0 / mean_rr
                         else:
-                            current_window['BPM'] = 0
+                            bpm = 0
                     elif len(beat_times) == 1:
-                        current_window['BPM'] = 0  # Solo un beat, impossibile calcolare BPM
+                        bpm = 0  # Solo un beat, impossibile calcolare BPM
                     else:
-                        current_window['BPM'] = 0  # Nessun beat nella finestra
+                        bpm = 0  # Nessun beat nella finestra
                     
                     #print(f"Finestra {i} BPM: {current_window['BPM']}")
                     
+                    current_window['BPM'] = torch.Tensor([bpm]).float()
                     self._windows[windows_counter] = current_window
                     windows_counter += 1
           
@@ -544,6 +548,11 @@ class MITBIHDataset(Dataset):
         """Restituisce il numero totale di campioni nel dataset."""
         return len(self._windows.keys())
 
+
+    def get(self, idx: int) -> Tuple[torch.Tensor, torch.Tensor]:
+        return self._windows[idx]
+
+
     def __getitem__(self, idx: int) -> Tuple[torch.Tensor, torch.Tensor]:
         """
         Recupera un singolo campione e la sua etichetta.
@@ -559,18 +568,8 @@ class MITBIHDataset(Dataset):
                                               per essere compatibile con layer convoluzionali
                                               che si aspettano (canali, lunghezza).
         """
-        # segment, label = self.data[idx]
-
-        # # Converti in tensori PyTorch
-        # segment_tensor = torch.tensor(segment, dtype=torch.float32)
-        # label_tensor = torch.tensor(label, dtype=torch.long) # Le etichette sono tipicamente LongTensor per la classificazione
-
-        # # Aggiungi una dimensione per i canali (necessario per molti modelli come le CNN)
-        # # (segment_length,) -> (1, segment_length)
-        # segment_tensor = segment_tensor.unsqueeze(0)
-
-        # return segment_tensor, label_tensor
         
-        return self._windows[idx]
+        window_data = self._windows[idx]
+        return window_data['signal'], window_data['BPM']
 
 

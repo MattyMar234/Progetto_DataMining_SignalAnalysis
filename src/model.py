@@ -2,72 +2,110 @@ import torch
 import torch.nn as nn
 import math
 
-class TransformerRegressor(nn.Module):
+class PositionalEncoding(nn.Module):
+    """
+    Implementa il Positional Encoding standard basato su seno e coseno.
+    Aggiunge informazioni sulla posizione del token agli embedding.
+    """
+    def __init__(self, d_model: int, dropout: float = 0.1, max_len: int = 5000):
+        super().__init__()
+        self.dropout = nn.Dropout(p=dropout)
+
+        # Crea la matrice di encoding posizionale
+        # Shape: (max_len, d_model)
+        position = torch.arange(max_len).unsqueeze(1)
+        div_term = torch.exp(torch.arange(0, d_model, 2) * (-math.log(10000.0) / d_model))
+        pe = torch.zeros(max_len, 1, d_model)
+        pe[:, 0, 0::2] = torch.sin(position * div_term)
+        pe[:, 0, 1::2] = torch.cos(position * div_term)
+
+        # Registra la matrice come buffer (non sarà addestrata)
+        self.register_buffer('pe', pe)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """
+        Args:
+            x: Tensor input con shape (sequence_length, batch_size, d_model)
+               o (batch_size, sequence_length, d_model) - dipendente dall'input del TransformerEncoder
+               PyTorch standard usa (sequence_length, batch_size, feature_dim) per PE.
+               Useremo (batch_size, sequence_length, feature_dim) e trasporremo se necessario.
+        Returns:
+            Tensor con shape uguale a x, con l'aggiunta del positional encoding.
+        """
+        # Assumiamo input shape (batch_size, sequence_length, d_model)
+        batch_size, seq_len, d_model = x.shape
+
+        x = x.permute(1, 0, 2) # -> (sequence_length, batch_size, d_model)
+        x = x + self.pe[:seq_len]
+        x = self.dropout(x)
+        x = x.permute(1, 0, 2)
+        return x
+
+class Transformer_BPM_Regressor(nn.Module):
     def __init__(
             self, 
             max_token: int,
-            input_dim: int, 
+            in_channels: int,
             d_model: int, 
             head_num: int, 
             num_encoder_layers: int, 
             dim_feedforward: int, 
             dropout: float, 
-            output_dim: int
         ):
-        super(TransformerRegressor, self).__init__()
+        super(Transformer_BPM_Regressor, self).__init__()
+        self.max_token = max_token
+        self.in_channels = in_channels
         
-        self.positional_encoding = self._generate_positional_encoding(max_token, d_model)
+        # 1. Proiezione dell'input raw nella dimensione del modello
+        self.input_projection = nn.Linear(in_channels, d_model)
         
-        self.input_projection = nn.Linear(input_dim, d_model)
+        # 2. Positional Encoding
+        self.positional_encoding = PositionalEncoding(d_model, dropout, max_len=max_token + 10)
+
+        # 3. Transformer Encoder
         self.transformer_encoder = nn.TransformerEncoder(
-            nn.TransformerEncoderLayer(d_model=d_model, nhead=head_num, dim_feedforward=dim_feedforward, dropout=dropout, batch_first=True),
+            nn.TransformerEncoderLayer(
+                d_model=d_model, 
+                nhead=head_num, 
+                dim_feedforward=dim_feedforward, 
+                dropout=dropout, 
+                batch_first=True
+            ),
             num_layers=num_encoder_layers
         )
-        self.regressor = nn.Linear(d_model, output_dim)
+        
+        # 4. Regression Head
+        # Dopo l'encoder, abbiamo (batch_size, sequence_length, model_dim).
+        # Aggreghiamo lungo la dimensione della sequenza e mappiamo a 1.
+        self.regression_head = nn.Linear(d_model, 1) # Output scalare per regressione
 
-    def _generate_positional_encoding(self, max_token: int, d_model: int):
-        
-        pe = torch.zeros(max_token + 1, d_model) #max_token + 1 perchè tengo in considerazione il token <CLS>
-        
-        position = torch.arange(0, max_token, dtype=torch.float).unsqueeze(1)
-        div_term = torch.exp(torch.arange(0, d_model, 2).float() * (-math.log(10000.0) / d_model))
-        pe[:, 0::2] = torch.sin(position * div_term)
-        pe[:, 1::2] = torch.cos(position * div_term)
-        pe = pe.unsqueeze(0)  # Add batch dimension
-        
-        return nn.Parameter(pe, requires_grad=False)
 
+   
     def forward(self, x):
-        # x shape: (batch_size, seq_len, input_dim)
-        batch_size, seq_len, _ = x.size()
+  
+        if x.shape[-1] != self.max_token:
+            raise ValueError(f"Input sequence length must be {self.max_token}, but got {x.shape[1]}. Shape: {x.shape}")
+
+        # Trasponi le dimensioni: [batch, channels, elements] -> [batch, elements, channels]
+        x = x.permute(0, 2, 1) # -> (batch_size, sequence_length, in_channels)
+
         
-        # Ensure seq_len does not exceed max_token
-        if seq_len > self.positional_encoding.size(1) - 1:
-            x = x[:, :self.positional_encoding.size(1) - 1, :]
-            seq_len = self.positional_encoding.size(1) - 1
-        
-        # Add <CLS> token (initialized as zeros)
-        cls_token = torch.zeros(batch_size, 1, x.size(2), device=x.device)
-        x = torch.cat([cls_token, x], dim=1)  # New shape: (batch_size, seq_len + 1, input_dim)
-        
-        # Project input to d_model dimensions
-        x = self.input_projection(x)
-        
-        # Add positional encoding
-        x = x + self.positional_encoding[:, :seq_len + 1, :]
-        
-        # Transformer expects (seq_len, batch_size, d_model)
-        #x = x.permute(1, 0, 2)
-        
-        # Pass through transformer encoder
-        x = self.transformer_encoder(x)
-        
-        # Use the <CLS> token representation for regression
-        cls_representation = x[0, :, :]  # Shape: (batch_size, d_model)
-        
-        # Pass through regressor
-        output = self.regressor(cls_representation)
-        return output
+        # 1. Proiezione dell'input
+        x = self.input_projection(x) # -> (batch_size, sequence_length, model_dim)
+
+        # 2. Aggiunta del Positional Encoding
+        x = self.positional_encoding(x) # -> (batch_size, sequence_length, model_dim)
+
+        # 3. Passaggio attraverso il Transformer Encoder
+        transformer_output = self.transformer_encoder(x) # -> (batch_size, sequence_length, model_dim)
+
+        # 4. Aggregazione e Regression Head
+        aggregated_output = torch.mean(transformer_output, dim=1) # -> (batch_size, model_dim)
+
+        # Passa l'output aggregato attraverso lo strato di regressione
+        regression_output = self.regression_head(aggregated_output) # -> (batch_size, 1)
+
+        return regression_output
 
 # Example usage
 if __name__ == "__main__":
@@ -80,7 +118,7 @@ if __name__ == "__main__":
     dropout = 0.1
     output_dim = 1
 
-    model = TransformerRegressor(max_token, input_dim, d_model, nhead, num_encoder_layers, dim_feedforward, dropout, output_dim)
+    model = Transformer_BPM_Regressor(max_token, input_dim, d_model, nhead, num_encoder_layers, dim_feedforward, dropout, output_dim)
     sample_input = torch.randn(32, 50, input_dim)  # Batch of 32, sequence length 50, input_dim 10
     output = model(sample_input)
     print(output.shape)  # Expected output shape: (32, output_dim)

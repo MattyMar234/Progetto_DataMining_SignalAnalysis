@@ -1,11 +1,147 @@
 import argparse
 from typing import Final
 
-from dataset import DatasetMode, MITBIHDataset
+import torch.optim as optim
+import torch
+import torch.nn as nn
+from tqdm.auto import tqdm
+
+from dataset.dataset import DatasetMode, MITBIHDataset
+from dataset.datamodule import Mitbih_datamodule
 import os
 
+from model import Transformer_BPM_Regressor
 from setting import *
+import setting
 
+
+def check_pytorch_cuda() -> bool:
+    #Globals.APP_LOGGER.info(f"PyTorch Version: {torch.__version__}")
+    
+    if torch.cuda.is_available():
+        setting.APP_LOGGER.info("CUDA is available on this system.")
+        setting.APP_LOGGER.info(f"Available GPUs: {torch.cuda.device_count()}")
+        for i in range(torch.cuda.device_count()):
+            setting.APP_LOGGER.info(f"Device {i}: {torch.cuda.get_device_name(i)}")
+        return True
+    else:
+        setting.APP_LOGGER.info("CUDA is not available on this system.")
+        return False
+
+
+def trainModel(
+    device: torch.device, 
+    datamodule: Mitbih_datamodule, 
+    model: nn.Module, 
+    num_epochs: int,
+    checkpoint_dir: str = 'checkpoints',
+    checkpoint_filename: str | None = None
+   ) -> None:
+    
+    # Assicurati che la directory dei checkpoint esista
+    os.makedirs(checkpoint_dir, exist_ok=True)
+    #checkpoint_path = os.path.join(checkpoint_dir, checkpoint_filename)
+    start_epoch: int = 0
+    
+    if checkpoint_filename is not None:
+        # Carica un checkpoint esistente se presente
+        if os.path.exists(checkpoint_filename):
+            print(f"Caricamento checkpoint da {checkpoint_filename}")
+            checkpoint = torch.load(checkpoint_filename, map_location=device)
+            model.load_state_dict(checkpoint['model_state_dict'])
+            optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+            best_val_loss = checkpoint['loss']
+            start_epoch = checkpoint['epoch'] + 1
+            print(f"Riprendi l'addestramento dall'epoca {start_epoch} con validation loss {best_val_loss:.4f}")
+
+
+    train_dataloader = datamodule.train_dataloader()
+    val_dataloader = datamodule.val_dataloader()
+    
+    loss_function = nn.MSELoss()
+    optimizer = optim.Adam(model.parameters(), lr=0.001)
+
+    model.to(device)
+
+    for epoch in range(start_epoch, num_epochs):
+        print(f"Epoca {epoch+1}/{num_epochs}")
+
+        # --- Fase di Training ---
+        model.train()
+        train_loss = 0
+        # Utilizza tqdm per visualizzare l'avanzamento del training
+        train_loop = tqdm(train_dataloader, leave=False, desc=f"Training Epoca {epoch+1}")
+        for batch_idx, (signal, bpm) in enumerate(train_loop):
+            
+            #print(signal.shape)
+    
+            signal = signal.to(device)
+            bpm = bpm.to(device)
+
+            optimizer.zero_grad()
+            outputs = model(signal)
+            loss = loss_function(outputs, bpm)
+
+            loss.backward()
+            optimizer.step()
+
+            train_loss += loss.item()
+
+            # Aggiorna la descrizione di tqdm con la loss corrente
+            train_loop.set_description(f"Training Epoca {epoch+1} Loss: {loss.item():.4f}")
+
+        avg_train_loss = train_loss / len(train_dataloader)
+
+        # --- Fase di Validation ---
+        model.eval()
+        val_loss = 0
+        # Utilizza tqdm per visualizzare l'avanzamento della validation
+        val_loop = tqdm(val_dataloader, leave=False, desc=f"Validation Epoca {epoch+1}")
+        with torch.no_grad():
+            for batch_idx, (signal, bpm) in enumerate(val_loop):
+                
+                signal = signal.to(device)
+                bpm = bpm.to(device)
+                
+                outputs = model(signal)
+                loss = loss_function(outputs, bpm)
+
+                val_loss += loss.item()
+
+                # Aggiorna la descrizione di tqdm con la loss corrente
+                val_loop.set_description(f"Validation Epoca {epoch+1} Loss: {loss.item():.4f}")
+
+
+        avg_val_loss = val_loss / len(val_dataloader)
+
+        print(f"Epoca {epoch+1}: Training Loss = {avg_train_loss:.4f}, Validation Loss = {avg_val_loss:.4f}")
+
+        # --- Gestione Checkpoint ---
+        if avg_val_loss < best_val_loss:
+            best_val_loss = avg_val_loss
+            
+            checkpoint_path = os.path.join(checkpoint_dir, f"Epoch_{epoch+1}-{avg_val_loss}")
+            
+            print(f"Validation loss migliorata. Salvataggio modello in {checkpoint_path}")
+            torch.save({
+                'epoch': epoch,
+                'model_state_dict': model.state_dict(),
+                'optimizer_state_dict': optimizer.state_dict(),
+                'loss': best_val_loss,
+            }, checkpoint_dir)
+
+    print("Addestramento completato.")
+    # # Opzionale: Carica il miglior modello addestrato prima di terminare la funzione
+    # if os.path.exists(checkpoint_path):
+    #      print(f"Caricamento del miglior modello da {checkpoint_path}")
+    #      checkpoint = torch.load(checkpoint_path, map_location=device)
+    #      model.load_state_dict(checkpoint['model_state_dict'])
+
+    
+    
+    
+def testModel(device: torch.device, datamodule: Mitbih_datamodule, model, **kwargs) -> None:
+    pass
 
 def main():
 
@@ -43,18 +179,53 @@ def main():
     sample_per_side = sample_rate * args.window_stride
 
     
-    MITBIHDataset.setDatasetPath(MITBIH_PATH)
+    # MITBIHDataset.setDatasetPath(MITBIH_PATH)
     
-    train_dataset = MITBIHDataset(
-        mode=DatasetMode.TRAINING, 
-        sample_rate=360,
-        sample_per_window=360*10,  # 10 secondi
-        sample_per_side=360*5,  # 5 secondi
+    # train_dataset = MITBIHDataset(
+    #     mode=DatasetMode.TRAINING, 
+    #     sample_rate=360,
+    #     sample_per_window=360*10,  # 10 secondi
+    #     sample_per_side=360*5,  # 5 secondi
+    # )
+    
+    dataModule = Mitbih_datamodule(
+        args.dataset_path, 
+        sample_rate=sample_rate, 
+        window_size_t=args.window_size,
+        window_stride_t=args.window_stride,
+        num_workers=6,
+        batch_size=12
     )
     
-    print(f"Dataset di Training creato con {len(train_dataset)} campioni.")
+    #print(dataModule.train_dataset()[2])
     
-    train_dataset.plot_all_windows_for_record('207')
+    
+    model = Transformer_BPM_Regressor(
+        max_token=args.window_size*sample_rate,
+        in_channels=2,
+        d_model=args.d_model,
+        head_num=8,
+        num_encoder_layers=4,
+        dim_feedforward=args.dff,
+        dropout=args.dropout_rate,
+    )
+    
+    print("Architettura del Modello:")
+    print(model)
+    
+    
+    device: torch.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    print(f"Utilizzando dispositivo: {device}")
+
+
+    trainModel(
+        device = device,
+        datamodule = dataModule,
+        model = model,
+        num_epochs = 1,
+        checkpoint_dir = setting.OUTPUT_PATH,
+        checkpoint_filename = None
+    )
 
 
 if __name__ == "__main__":
