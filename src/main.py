@@ -2,15 +2,46 @@ import argparse
 from typing import Final
 
 from dataset import DatasetMode, MITBIHDataset
+import os
 
-
-#MITBIH_PATH = './mit-bih-arrhythmia-database-1.0.0/' # Assicurati che finisca con '/'
-MITBIH_PATH: Final[str] = '/app/Dataset/mitbih_database'
-
-
+from setting import *
 
 
 def main():
+
+    parser = argparse.ArgumentParser(description="Script per configurare e addestrare un modello Transformer sui dati MIT-BIH.")
+    
+    # Parametri per la struttura del modello Transformer
+   
+
+    parser.add_argument("--num_layers", type=int, default=NUM_LAYERS, help=f"Numero di strati del Transformer (default: {NUM_LAYERS})")
+    parser.add_argument("--d_model", type=int, default=D_MODEL, help=f"Dimensione del modello (default: {D_MODEL})")
+    parser.add_argument("--num_heads", type=int, default=NUM_HEADS, help=f"Numero di teste di attenzione (default: {NUM_HEADS})")
+    parser.add_argument("--dff", type=int, default=DFF, help=f"Dimensione del feed-forward (default: {DFF})")
+    parser.add_argument("--dropout_rate", type=float, default=DROPOUT_RATE, help=f"Tasso di dropout (default: {DROPOUT_RATE})")
+    
+    # Percorsi e configurazioni
+    parser.add_argument("--dataset_path", type=str, default=DATASET_PATH, help=f"Percorso del dataset (default: {DATASET_PATH})")
+    parser.add_argument("--checkpoint_path", type=str, default=None, help="Percorso di un addestramento precedente (default: None)")
+    parser.add_argument("--output_path", type=str, default=OUTPUT_PATH, help=f"Percorso di output per i risultati (default: {OUTPUT_PATH})")
+    parser.add_argument("--num_epochs", type=int, default=NUM_EPOCHS, help=f"Numero di epoche di training (default: {NUM_EPOCHS})")
+    parser.add_argument("--mode", type=str, choices=["training", "test"], default="training", help="Modalità di esecuzione: 'training' o 'test' (default: 'training')")
+    parser.add_argument("--learning_rate", type=float, default=LEARNING_RATE, help=f"Valore iniziale del learning rate (default: {LEARNING_RATE})")
+
+    # Configurazioni del segnale
+    parser.add_argument("--window_size", type=int, default=WINDOW_SIZE, help=f"Dimensione della finestra del segnale in secondi (default: {WINDOW_SIZE})")
+    parser.add_argument("--window_stride", type=int, default=WINDOW_STRIDE, help=f"Stride della finestra del segnale in secondi (default: {WINDOW_STRIDE})")
+    args = parser.parse_args()
+    
+    # Imposta i parametri del dataset
+    dataset_path = args.dataset_path
+    MITBIHDataset.setDatasetPath(dataset_path)
+    
+    # Calcola i parametri del dataset in base alla frequenza di campionamento
+    sample_rate = 360
+    sample_per_window = sample_rate * args.window_size
+    sample_per_side = sample_rate * args.window_stride
+
     
     MITBIHDataset.setDatasetPath(MITBIH_PATH)
     
