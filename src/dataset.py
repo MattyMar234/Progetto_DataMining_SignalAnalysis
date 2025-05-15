@@ -6,6 +6,9 @@ from torch.utils.data import Dataset
 from enum import Enum, auto
 from typing import Dict, List, Tuple
 import pandas as pd
+import io
+from PIL import Image
+from tqdm import tqdm
 import matplotlib.pyplot as plt
 
 
@@ -20,11 +23,12 @@ import matplotlib.pyplot as plt
 AAMI_CLASSES = {
     'N': 0, 'L': 0, 'R': 0, 'B': 0, '|': 0,
     'A': 1, 'a': 1, 'J': 1, 'S': 1, 'j': 1,
-    'V': 2, 'E': 2,
+    'V': 2, 'E': 2 , '!': 2, 'e': 2,
     'F': 3,
     'Q': 4, '/': 4, '~': 4,
-    '+': 5, '\"': 5,
-    'X': 6, 'x' : 6,
+    '+': 5, '\"': 5, '[': 5,
+    ']': 6,
+    'X': 7, 'x' : 7,
 
 }
 
@@ -36,37 +40,29 @@ class DatasetMode(Enum):
     TEST = auto()
     
 class SampleType(Enum):
-    NORMAL = auto()
-    SVEB = auto()
-    VEB = auto()
-    FUSION = auto()
-    UNKNOWN = auto()
-    NOSIE = auto() # Per campioni che non possono essere classificati
-    START_SEQUENZE = auto() # Per campioni che non possono essere classificati
+    NORMAL = "N L R B |"
+    SVEB = "A a J j S"
+    VEB = "V E ! e"
+    FUSION = "F"
+    UNKNOWN = "Q / ~"
+    NOISE = "X x"
+    START_NOISE = "["
+    END_NOISE = "]"
+    START_SEG = "+ \""
     
     @classmethod
     def to_Label(cls, type: str) -> 'SampleType':
-        
-        idx = AAMI_CLASSES.get(type, -1)
-        
-        match idx:
-            case 0:
-                return SampleType.NORMAL
-            case 1:
-                return SampleType.SVEB
-            case 2:
-                return SampleType.VEB
-            case 3:
-                return SampleType.FUSION
-            case 4:
-                return SampleType.UNKNOWN
-            case 5:
-                return SampleType.START_SEQUENZE
-            case 6:
-                return SampleType.NOSIE
-            case _:
-                raise ValueError(f"Tipo di battito sconosciuto: {type}. Non può essere convertito in SampleType.")
+        if not isinstance(type, str) or len(type) == 0:
+            raise ValueError(f"Tipo di battito non valido: {type}")
 
+        # Mappa il carattere a un oggetto SampleType usando i valori degli enum
+        type_char = type.strip()[0]
+        for member in cls:
+            if type_char in member.value.split():
+                return member
+        raise ValueError(f"Tipo di battito sconosciuto: {type_char}. Non può essere convertito in SampleType.")
+        
+       
 
 # Tipi di battito da includere (quelli mappati nelle classi AAMI)
 VALID_BEAT_SYMBOLS = list(AAMI_CLASSES.keys())
@@ -190,187 +186,344 @@ class MITBIHDataset(Dataset):
     
         self._signals_dict = {} # Dizionario per memorizzare i segnali
         self._windows: Dict[int, Dict[str, any]] = {} 
+        self._file_windows: Dict[str, Dict[int, Dict[str, any]]] = {}
         self._load_data()
         
-    def plot_windows(self):
-        # --- Plot del segnale ---
-        output_dir = os.path.join(self.data_path, "plots")
-        os.makedirs(output_dir, exist_ok=True)
-        output_filepath = os.path.join(output_dir, f"{record_name}_ecg_plot.png")
         
+    def plot_windows(self, idx: int, asfile: bool = False, save: bool = False) -> Image.Image | None:
+        """
+        Plotta una finestra del segnale ECG dato l'indice.
+        """
+        window = self.__getitem__(idx)
+        signal = window['signal']
+        record_name = window['record_name']
+        start = window['start']
+        end = window['end']
+        beat_positions = window['beat_positions']
+        
+        x = np.arange(start, end)
+
+        # --- Plot del segnale ---
+        output_dir = os.path.join(MITBIHDataset._DATASET_PATH, "plots")
+        os.makedirs(output_dir, exist_ok=True)
+        output_filepath = os.path.join(output_dir, f"{record_name}_window_{idx}_ecg_plot.png")
+
         plt.figure(figsize=(12, 4))
-        plt.plot(signal[:2000], label='Segnale ECG')
-        plt.title(f"Segnale ECG - Record {record_name}")
-        plt.xlabel("Campioni")
-        plt.ylabel("Ampiezza")
+        #plt.xlim(start, end)
+        plt.ylim(0, 1)
+        
+        # Se il segnale ha più canali, plottiamo solo il primo
+        plt.plot(x, signal[0].numpy(), label='Segnale ECG MLII')
+        plt.plot(x, signal[1].numpy(), label='Segnale ECG V1')
+        
+        # ax = plt.gca()  # Ottieni l'oggetto Axes corrente
+        # for label in ax.get_xticklabels():
+        #     x, y = label.get_position()
+        #     label.set_position((x + start, y))
+            #label.set_x(label.get_position()[0] + start)  # offset negativo = più in basso
+        
+        plt.title(f"Segnale ECG - Record {record_name} - Finestra {idx} ({start}-{end})")
+        #plt.xlabel("Campioni nella finestra")
+        plt.ylabel("Ampiezza normalizzata")
         plt.legend()
         plt.grid()
         
-        # Aggiungi linee verticali ai punti specificati
-        vertical_lines = [7, 83, 396, 711, 1032, 1368, 1712]
-        for x in vertical_lines:
-            plt.axvline(x=x, color='red', linestyle='--', linewidth=0.8)
+        
+        # Aggiungi linee verticali e annotazioni per i beat
+        for p, label in zip(window['beat_positions'], window['beat_labels']):
+            plt.axvline(x=p, color='red', linestyle='--', linewidth=0.8)
+            plt.text(p-1, 0.95, str(label.value), color='red', rotation=90, fontsize=8, ha='center', va='top')
+
+        # Aggiungi linee verticali e annotazioni per i tag
+        for p, tag in zip(window['tag_positions'], window['tag']):
+            plt.axvline(x=p, color='blue', linestyle=':', linewidth=0.8)
+            plt.text(p-1, 0.90, str(tag.value), color='blue', rotation=0, fontsize=8, ha='center', va='bottom')
+
+        # Mostra il valore del BPM sotto il grafico
+        plt.figtext(0.5, 0.01, f"BPM: {window['BPM']:.2f}", ha='center', fontsize=10, color='green')
+        
+        if save:
+            plt.savefig(output_filepath)
+            plt.close()
+        else:
+            buf = io.BytesIO()
+            plt.savefig(buf, format='png')
+            plt.close()
+            buf.seek(0)
+            img = Image.open(buf)
+            return img
+      
+        
+    def plot_all_windows_for_record(self, record_name: str):
+        """
+        Plotta tutte le finestre di un record in modo continuo.
+        """
+        if record_name not in self._file_windows:
+            print(f"Record {record_name} non trovato in self._file_windows.")
+            return
+
+        windows = self._file_windows[record_name]
+        num_windows = len(windows)
+        if num_windows == 0:
+            print(f"Nessuna finestra trovata per il record {record_name}.")
+            return
+
+        output_dir = os.path.join(MITBIHDataset._DATASET_PATH, "plots")
+        os.makedirs(output_dir, exist_ok=True)
+        output_filepath = os.path.join(output_dir, f"{record_name}_all_windows_ecg_plot.png")
+
+    
+        
+        # Plotta ogni finestra e concatena le immagini verticalmente
+        window_imgs = []
         
         
-        plt.savefig(output_filepath)
-        plt.close()
+        for i in tqdm(range(num_windows), desc=f"Plotting windows for record {record_name}"):
+            img = self.plot_windows(idx=i + sum(len(self._file_windows[r]) for r in self.record_list if r < record_name), asfile=False, save=False)
+            if img is not None:
+                window_imgs.append(img.convert("RGB"))
+
+        if not window_imgs:
+            print(f"Nessuna immagine generata per le finestre di {record_name}.")
+            return
+
+        # Calcola la larghezza massima e l'altezza totale
+        widths, heights = zip(*(img.size for img in window_imgs))
+        max_width = max(widths)
+        total_height = sum(heights)
+
+        # Crea una nuova immagine vuota per concatenare tutte le finestre
+        concatenated_img = Image.new('RGB', (max_width, total_height))
+        y_offset = 0
+        for img in window_imgs:
+            concatenated_img.paste(img, (0, y_offset))
+            y_offset += img.size[1]
+
+        concatenated_img.save(output_filepath)
+        print(f"Immagine concatenata salvata in: {output_filepath}")
+        
+        
+        # plt.savefig(output_filepath)
+        # plt.close()
+        
+        
+      
+        
 
     def _load_data(self):
         
         windows_counter:int = 0
-
+        current_record_name:str | None = None
         """Carica i dati dai record selezionati (CSV per segnale, TXT per annotazioni)."""
-        for record_name in self.record_list:
-            csv_filepath = os.path.join(MITBIHDataset._DATASET_PATH, f"{record_name}.csv")
-            txt_filepath = os.path.join(MITBIHDataset._DATASET_PATH, f"{record_name}annotations.txt")
+        
+        try:
+    
+            for record_name in self.record_list:
+                current_record_name = record_name
+                csv_filepath = os.path.join(MITBIHDataset._DATASET_PATH, f"{record_name}.csv")
+                txt_filepath = os.path.join(MITBIHDataset._DATASET_PATH, f"{record_name}annotations.txt")
 
-       
-            # --- Leggi il segnale dal file CSV ---
-            # Si aspetta colonne: 'sample #','MLII','V5'
-            df = pd.read_csv(csv_filepath)
-            
-            for idx, col in enumerate(df.columns):
-                df = df.rename(columns={df.columns[idx]: df.columns[idx].replace('\'', '')}) # Rinomina la prima colonna in 'sample #'
-
-            signal: torch.Tensor | None = None
-            
-            if MITBIHDataset._MLII_COL in df.columns:
-                signal = torch.from_numpy(df[MITBIHDataset._MLII_COL].values).unsqueeze(0)
-            
-            if MITBIHDataset._V1_COL in df.columns:
-                if signal is None:
-                    signal = torch.from_numpy(df[MITBIHDataset._V1_COL].values).unsqueeze(0)
-                else:
-                    signal = torch.cat((signal, torch.from_numpy(df[MITBIHDataset._V1_COL].values).unsqueeze(0)), dim=0)
-            
-            if MITBIHDataset._V2_COL in df.columns:
-                if signal is None:
-                    signal = torch.from_numpy(df[MITBIHDataset._V2_COL].values).unsqueeze(0)
-                else:
-                    signal = torch.cat((signal, torch.from_numpy(df[MITBIHDataset._V2_COL].values).unsqueeze(0)), dim=0)
-           
-            # if MITBIHDataset._V3_COL in df.columns:
-            #     if signal is None:
-            #         signal = torch.from_numpy(df[MITBIHDataset._V3_COL].values).unsqueeze(0)
-            #     else:
-            #         signal = torch.cat((signal, torch.from_numpy(df[MITBIHDataset._V3_COL].values).unsqueeze(0)), dim=0)
-            
-            if MITBIHDataset._V4_COL in df.columns:
-                if signal is None:
-                    signal = torch.from_numpy(df[MITBIHDataset._V4_COL].values).unsqueeze(0)
-                else:
-                    signal = torch.cat((signal, torch.from_numpy(df[MITBIHDataset._V4_COL].values).unsqueeze(0)), dim=0)
-            
-            if MITBIHDataset._V5_COL in df.columns:
-                if signal is None:
-                    signal = torch.from_numpy(df[MITBIHDataset._V5_COL].values).unsqueeze(0)
-                else:
-                    signal = torch.cat((signal, torch.from_numpy(df[MITBIHDataset._V5_COL].values).unsqueeze(0)), dim=0)
-            
-           
-
-            # Normalizza il segnale
-            signal = signal.float() 
-            signal = (signal - MITBIHDataset._MIN_VALUE) / (MITBIHDataset._MAX_VALUE - MITBIHDataset._MIN_VALUE) 
-            
-          
-            
-            # Salva il segnale per il record corrente
-            self._signals_dict[record_name] = signal 
-            
-            
-            windows_number = int((len(signal[0]) - self.samples_per_window) / self.samples_per_side) + 1
-            record_windows: list = []
-            
-           
-            #creazione delle finestre
-            for i in range(windows_number):
-                start = i * self.samples_per_side
-                end = start + self.samples_per_window
+        
+                # --- Leggi il segnale dal file CSV ---
+                # Si aspetta colonne: 'sample #','MLII','V5'
+                df = pd.read_csv(csv_filepath)
                 
-                # Crea una finestra per il segnale
-                window = {
-                    'start': start,
-                    'end': end,
-                    'signal': signal[:, start:end],
-                    'record_name': record_name,
-                    'beat_number': 0,
-                    'BPM': 0,
-                    'beat_positions': [],
-                    'beat_labels': [],   
-                    'beat_time': [],
-                }
+                for idx, col in enumerate(df.columns):
+                    df = df.rename(columns={df.columns[idx]: df.columns[idx].replace('\'', '')}) # Rinomina la prima colonna in 'sample #'
+
+                signal: torch.Tensor | None = None
                 
-                record_windows.append(window)
-            
-            #print(f"Record {record_name} ha {len(record_windows)} finestre.")
-            
-            window_pointer: int = 0
-            current_window = record_windows[window_pointer]
-            window_start = current_window['start']
-            window_end = current_window['end']
-            
-            with open(txt_filepath, 'r') as f:
-                f.readline() # Salta la prima riga (header)
+                if MITBIHDataset._MLII_COL in df.columns:
+                    signal = torch.from_numpy(df[MITBIHDataset._MLII_COL].values).unsqueeze(0)
                 
-                for line in f:
+                if MITBIHDataset._V1_COL in df.columns:
+                    if signal is None:
+                        signal = torch.from_numpy(df[MITBIHDataset._V1_COL].values).unsqueeze(0)
+                    else:
+                        signal = torch.cat((signal, torch.from_numpy(df[MITBIHDataset._V1_COL].values).unsqueeze(0)), dim=0)
+                
+                if MITBIHDataset._V2_COL in df.columns:
+                    if signal is None:
+                        signal = torch.from_numpy(df[MITBIHDataset._V2_COL].values).unsqueeze(0)
+                    else:
+                        signal = torch.cat((signal, torch.from_numpy(df[MITBIHDataset._V2_COL].values).unsqueeze(0)), dim=0)
+            
+                # if MITBIHDataset._V3_COL in df.columns:
+                #     if signal is None:
+                #         signal = torch.from_numpy(df[MITBIHDataset._V3_COL].values).unsqueeze(0)
+                #     else:
+                #         signal = torch.cat((signal, torch.from_numpy(df[MITBIHDataset._V3_COL].values).unsqueeze(0)), dim=0)
+                
+                if MITBIHDataset._V4_COL in df.columns:
+                    if signal is None:
+                        signal = torch.from_numpy(df[MITBIHDataset._V4_COL].values).unsqueeze(0)
+                    else:
+                        signal = torch.cat((signal, torch.from_numpy(df[MITBIHDataset._V4_COL].values).unsqueeze(0)), dim=0)
+                
+                if MITBIHDataset._V5_COL in df.columns:
+                    if signal is None:
+                        signal = torch.from_numpy(df[MITBIHDataset._V5_COL].values).unsqueeze(0)
+                    else:
+                        signal = torch.cat((signal, torch.from_numpy(df[MITBIHDataset._V5_COL].values).unsqueeze(0)), dim=0)
+                
+            
 
-                    # Rimuovi spazi bianchi
-                    line = line.strip()
+                # Normalizza il segnale
+                signal = signal.float() 
+                signal = (signal - MITBIHDataset._MIN_VALUE) / (MITBIHDataset._MAX_VALUE - MITBIHDataset._MIN_VALUE) 
+                
+            
+                
+                # Salva il segnale per il record corrente
+                self._signals_dict[record_name] = signal 
+                
+                
+                windows_number:float = ((len(signal[0]) - self.samples_per_window) / self.samples_per_side) + 1
+                windows_number_int = int(windows_number)
+                record_windows: list = []
+            
+            
+                #creazione delle finestre
+                for i in range(windows_number_int):
+                    start = i * self.samples_per_side
+                    end = start + self.samples_per_window
                     
-                    # Salta linee vuote o commenti
-                    if not line or line.startswith('#'): 
-                        continue
-
-                    # Dividi la riga in base agli spazi e ignore le stringe vuote
-                    parts = line.split() 
-
-                    # Una riga di annotazione valida dovrebbe avere almeno 3 parti (Time, Sample #, Type)
-                    if len(parts) < 3:
-                        raise ValueError(f"Riga di annotazione non valida: {line}.")
-
-                    beat_type = SampleType.to_Label(parts[2])
-                    sample = int(parts[1]) # Indice del campione
-                    time = self._formatTime(parts[0]) # Tempo in secondi
+                    # Crea una finestra per il segnale
+                    window = {
+                        'start': start,
+                        'end': end,
+                        'signal': signal[:, start:end],
+                        'record_name': record_name,
+                        'beat_number': 0,
+                        'BPM': 0,
+                        'beat_positions': [],
+                        'beat_labels': [], 
+                        'tag' : [],
+                        'tag_positions' : [],  
+                        'beat_time': [],
+                    }
                     
-                    #cerca la finestra in cui si trova il campione
-                    while not (window_start <= sample <= window_end):
-                        window_pointer += 1
-                        current_window = record_windows[window_pointer]
-                        window_start = current_window['start']
-                        window_end = current_window['end']
+                    record_windows.append(window)
+                
+                # Se ci sono campioni rimanenti, crea una finestra finale
+                if windows_number - windows_number_int > 0:
+                    start = MITBIHDataset._MAX_SAMPLE_NUM - 1 - self.samples_per_window
+                    end = start + self.samples_per_window
                     
-                                        
-                    match beat_type:
-                        case SampleType.NORMAL | SampleType.SVEB | SampleType.VEB | SampleType.FUSION:
-                            current_window['beat_positions'].append(sample)
-                            current_window['beat_labels'].append(beat_type)
-                            current_window['beat_number'] += 1
-                            current_window['beat_time'].append(time)
+                    # Crea una finestra per il segnale
+                    window = {
+                        'start': start,
+                        'end': end,
+                        'signal': signal[:, start:end],
+                        'record_name': record_name,
+                        'beat_number': 0,
+                        'BPM': 0,
+                        'beat_positions': [],
+                        'beat_labels': [], 
+                        'tag' : [],
+                        'tag_positions' : [],  
+                        'beat_time': [],
+                    }
+                    
+                    record_windows.append(window)
+                
+                #print(f"Record {record_name} ha {len(record_windows)} finestre.")
+                
+                window_pointer: int = 0
+                current_window = record_windows[window_pointer]
+                window_start = current_window['start']
+                window_end = current_window['end']
+                i_pointer: int = 0
+                j_pointer: int = 0
+                
+                with open(txt_filepath, 'r') as f:
+                    f.readline() # Salta la prima riga (header)
+                    
+                    for line in f:
+
+                        
+                        line = line.strip()  # Rimuovi spazi bianchi
+                        parts = line.split() # Dividi la riga in base agli spazi e ignore le stringe vuote
+
+                        # Una riga di annotazione valida dovrebbe avere almeno 3 parti (Time, Sample #, Type)
+                        if len(parts) < 3:
+                            raise ValueError(f"Riga di annotazione non valida: {line}.")
+
+                        beat_type = SampleType.to_Label(parts[2])
+                        sample_pos = int(parts[1])            # Indice del campione
+                        time = self._formatTime(parts[0]) # Tempo in secondi
+                        
+                          
+                        match beat_type:
+                            case SampleType.NORMAL | SampleType.SVEB | SampleType.VEB | SampleType.FUSION:
+                                #cero tutte le finestre dove posso inserire l'annotazione
+                                fist: bool = True
+                                inc: bool = False
+                                #for w in range(max(0 , i_pointer), min(i_pointer+2, len(record_windows))):
+                                for w in range(0, len(record_windows)):
+                                    current_window = record_windows[w]
+                                    window_start = current_window['start']
+                                    window_end = current_window['end']
+                                    
+                                    if window_start <= sample_pos <= window_end:
+                                        current_window['beat_positions'].append(sample_pos)
+                                        current_window['beat_labels'].append(beat_type)
+                                        current_window['beat_number'] += 1
+                                        current_window['beat_time'].append(time)
+                                #     elif fist:
+                                #         inc = True
+                                #         fist = False
+                                # if inc:
+                                #     i_pointer += 1
+                                       
+                            case SampleType.UNKNOWN | SampleType.START_SEG | SampleType.END_NOISE | SampleType.START_NOISE | SampleType.NOISE | SampleType.UNKNOWN:
+                                
+                                for w in range(0, len(record_windows)):
+                                    current_window = record_windows[w]
+                                    window_start = current_window['start']
+                                    window_end = current_window['end']
+                                    
+                                    if window_start <= sample_pos <= window_end:
+                                        current_window['tag_positions'].append(sample_pos)
+                                        current_window['tag'].append(beat_type)
+                                     
                             
+                            case _:
+                                # Se il tipo di battito non è valido, ignora
+                                print(f"Tipo di battito sconosciuto: {parts[2]}. Ignorato.")
+                                continue
+
                         
-                        case SampleType.UNKNOWN | SampleType.START_SEQUENZE | SampleType.NOSIE:
-                            pass
-                        
-                        case _:
-                            # Se il tipo di battito non è valido, ignora
-                            print(f"Tipo di battito sconosciuto: {parts[2]}. Ignorato.")
-                            continue
-                        
-                        # #Controlla la colonna 'Aux' se esiste e contiene (simbolo)
-                        # if len(parts) > 6 and parts[6].startswith('(') and len(parts[6]) > 1:
-                        #     beat_symbol_raw = parts[6].strip('()')
-                        #     if beat_symbol_raw in VALID_BEAT_SYMBOLS:
-                        #         aux = beat_symbol_raw
+        
+                for i in range(len(record_windows)):
+                    current_window = record_windows[i]
+                    #current_window['BPM'] = current_window['beat_number'] * ((60*self.sample_rate)/self.samples_per_window) 
                     
-      
-            for i in range(len(record_windows)):
-                current_window = record_windows[i]
-                current_window['BPM'] = (current_window['beat_number'] / (current_window['end'] - current_window['start'])) * 60
-                #print(f"Finestra {i} BPM: {current_window['BPM']}")
-                
-                self._windows[windows_counter] = current_window
-                windows_counter += 1
+                    # Calcola il BPM come media della distanza tra i diversi beat (RR interval)
+                    beat_times = current_window['beat_time']
+                    if len(beat_times) > 1:
+                        rr_intervals = [beat_times[i+1] - beat_times[i] for i in range(len(beat_times)-1)]
+                        mean_rr = np.mean(rr_intervals)
+                        if mean_rr > 0:
+                            current_window['BPM'] = 60.0 / mean_rr
+                        else:
+                            current_window['BPM'] = 0
+                    elif len(beat_times) == 1:
+                        current_window['BPM'] = 0  # Solo un beat, impossibile calcolare BPM
+                    else:
+                        current_window['BPM'] = 0  # Nessun beat nella finestra
+                    
+                    #print(f"Finestra {i} BPM: {current_window['BPM']}")
+                    
+                    self._windows[windows_counter] = current_window
+                    windows_counter += 1
+          
+                self._file_windows[record_name] = record_windows
+          
+        except Exception as e:
+            print(f"Errore durante il caricamento dei dati per il record {current_record_name}: {e}")
+            raise e
+            
            
     def _formatTime(self, time: str) -> float:        
         parts = time.split(':')

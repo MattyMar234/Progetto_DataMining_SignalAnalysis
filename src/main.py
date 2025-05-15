@@ -23,7 +23,7 @@ def main():
     
     print(f"Dataset di Training creato con {len(train_dataset)} campioni.")
     
-    print(train_dataset[100])
+    train_dataset.plot_all_windows_for_record('207')
 
 
 if __name__ == "__main__":
