@@ -44,7 +44,9 @@ class PositionalEncoding(nn.Module):
 class Transformer_BPM_Regressor(nn.Module):
     def __init__(
             self, 
-            max_token: int,
+            input_samples_num: int,
+            conv_kernel_size: int, # Dimensione del kernel convoluzionale
+            conv_stride: int,      # Passo della convoluzione
             in_channels: int,
             d_model: int, 
             head_num: int, 
@@ -53,14 +55,25 @@ class Transformer_BPM_Regressor(nn.Module):
             dropout: float, 
         ):
         super(Transformer_BPM_Regressor, self).__init__()
-        self.max_token = max_token
+        assert input_samples_num % conv_kernel_size == 0
+        
+        self.token_number = math.floor((input_samples_num  - conv_kernel_size) / conv_stride) + 1
         self.in_channels = in_channels
         
-        # 1. Proiezione dell'input raw nella dimensione del modello
-        self.input_projection = nn.Linear(in_channels, d_model)
+        
+        self.conv1d_projection = nn.Conv1d(
+            in_channels=in_channels,
+            out_channels=d_model, # L'output channels della conv diventa la dimensione del modello
+            kernel_size=conv_kernel_size,
+            stride=conv_stride,
+            padding=0,
+            # Non usiamo bias=False a meno di usare Batch Norm subito dopo
+        )
+        
+        self.conv_activation = nn.ReLU()
         
         # 2. Positional Encoding
-        self.positional_encoding = PositionalEncoding(d_model, dropout, max_len=max_token + 10)
+        self.positional_encoding = PositionalEncoding(d_model, dropout, max_len=self.token_number + 10)
 
         # 3. Transformer Encoder
         self.transformer_encoder = nn.TransformerEncoder(
@@ -82,17 +95,16 @@ class Transformer_BPM_Regressor(nn.Module):
 
    
     def forward(self, x):
-  
-        if x.shape[-1] != self.max_token:
-            raise ValueError(f"Input sequence length must be {self.max_token}, but got {x.shape[1]}. Shape: {x.shape}")
 
-        # Trasponi le dimensioni: [batch, channels, elements] -> [batch, elements, channels]
-        x = x.permute(0, 2, 1) # -> (batch_size, sequence_length, in_channels)
-
-        
         # 1. Proiezione dell'input
-        x = self.input_projection(x) # -> (batch_size, sequence_length, model_dim)
+        x = self.conv1d_projection(x)
+        x = self.conv_activation(x)
+  
+        # 2. Trasponi per il Positional Encoding e Transformer (batch_first=True)
+        # Da (batch_size, d_model, new_sequence_length) a (batch_size, new_sequence_length, d_model)
+        x = x.permute(0, 2, 1) # -> (batch_size, new_sequence_length, d_model)
 
+      
         # 2. Aggiunta del Positional Encoding
         x = self.positional_encoding(x) # -> (batch_size, sequence_length, model_dim)
 

@@ -63,7 +63,7 @@ class Mitbih_datamodule(pl.LightningDataModule):
         return DataLoader(self._VALIDATION_DATASET, batch_size=self._batch_size, num_workers=self._num_workers, shuffle=False, pin_memory=self._pin_memory, persistent_workers=self._persistent_workers, drop_last=True, prefetch_factor=self._prefetch_factor)
 
     def test_dataloader(self) -> DataLoader:
-        return DataLoader(self._TEST_DATASET, batch_size=self._batch_size, num_workers=self._num_workers, shuffle=False, pin_memory=self._pin_memory, persistent_workers=self._persistent_workers, drop_last=True, prefetch_factor=self._prefetch_factor)
+        return DataLoader(self._TEST_DATASET, batch_size=self._batch_size, num_workers=self._num_workers, shuffle=True, pin_memory=self._pin_memory, persistent_workers=self._persistent_workers, drop_last=True, prefetch_factor=self._prefetch_factor)
     
     def train_dataset(self) :
         return self._TRAINING_DATASET

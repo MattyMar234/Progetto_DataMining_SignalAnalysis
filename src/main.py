@@ -46,12 +46,13 @@ def trainModel(
     assert checkpoint_dir is not None, "Cartella dei checkpoint non specificata"
     
     # Assicurati che la directory esista
-    os.makedirs(checkpoint_dir,     exist_ok=True)
+    os.makedirs(checkpoint_dir, exist_ok=True)
 
     
     start_epoch: int = 0
     best_val_loss = float('inf')
 
+    model.to(device)
     loss_function = nn.MSELoss()
     optimizer = optim.Adam(model.parameters(), lr=start_lr)
     
@@ -74,14 +75,14 @@ def trainModel(
             model.load_state_dict(checkpoint_data['model_state_dict'])
             optimizer.load_state_dict(checkpoint_data['optimizer_state_dict'])
             scheduler.load_state_dict(checkpoint_data['scheduler_state_dict'])
-            best_val_loss = checkpoint_data['loss']
+            #best_val_loss = checkpoint_data['loss']
             start_epoch = checkpoint_data['epoch'] + 1
             print(f"Riprendi l'addestramento dall'epoca {start_epoch} con validation loss {best_val_loss:.4f}")
 
 
     train_dataloader = datamodule.train_dataloader()
     val_dataloader = datamodule.val_dataloader()
-    model.to(device)
+    
 
     with open(training_log_path, 'a') as log_file:
         if os.stat(training_log_path).st_size != 0:
@@ -182,15 +183,15 @@ def trainModel(
 
             # Definisci il percorso del file di checkpoint (salviamo solo il migliore)
             # Potresti volerne tenere di più o nominarli diversamente
-            checkpoint_path = os.path.join(checkpoint_dir, f"Epoch[{epoch+1}]_Loss[{best_val_loss:.4f}].pth")
+            checkpoint_path = os.path.join(checkpoint_dir, f"Epoch[{epoch+1}]_Loss[{avg_val_loss:.4f}].pth")
 
-            print(f"Validation loss migliorata ({best_val_loss:.4f}). Salvataggio modello in {checkpoint_path}")
+            print(f"Validation loss migliorata ({avg_val_loss:.4f}). Salvataggio modello in {checkpoint_path}")
             torch.save({
                 'epoch': epoch,
                 'model_state_dict': model.state_dict(),
                 'optimizer_state_dict': optimizer.state_dict(),
                 'scheduler_state_dict': scheduler.state_dict(), 
-                'best_val_loss': best_val_loss, # Salva il miglior loss raggiunto
+                'loss': avg_val_loss, # Salva il miglior loss raggiunto
             }, checkpoint_path) # Salva nel file specificato
 
 
@@ -198,14 +199,89 @@ def trainModel(
 
 
     print("Addestramento completato.")
-    # # Opzionale: Carica il miglior modello addestrato prima di terminare la funzione
-    # if os.path.exists(checkpoint_path):
-    #      print(f"Caricamento del miglior modello da {checkpoint_path}")
-    #      checkpoint = torch.load(checkpoint_path, map_location=device)
-    #      model.load_state_dict(checkpoint['model_state_dict'])
 
+def test_model(
+    device: torch.device, 
+    datamodule: Mitbih_datamodule, 
+    model: nn.Module, 
+    checkpoint: str
+    ):
     
+
+    # Imposta il modello in modalità valutazione
+    model.to(device)
+    loss_function = nn.MSELoss()
+    model.eval()
+
+    total_test_loss = 0  # Accumula la loss per l'intero set di test
+    total_test_mae = 0   # Accumula MAE per l'intero set di test
+    num_samples = 0      # Conta il numero totale di campioni elaborati
+
+   
+    print(f"Caricamento checkpoint da {checkpoint}")
+    checkpoint_data = torch.load(checkpoint, map_location=device)
+    model.load_state_dict(checkpoint_data['model_state_dict'])
+   
+    test_dataloader = datamodule.test_dataloader()
+    batch_size = test_dataloader.batch_size
+    # Disabilita il calcolo dei gradienti durante la valutazione
     
+    print("Avvio valutazione sul set di test...")
+    with torch.no_grad():
+        # Utilizza tqdm per visualizzare l'avanzamento della valutazione
+        #test_loop = tqdm(test_dataloader, desc="Valutazione Test Set")
+
+        for batch_idx, (signal, bpm) in enumerate(test_dataloader):
+ 
+            # Sposta i dati e le etichette sul dispositivo
+            signal = signal.to(device)
+            # Assicurati che le etichette target siano float e sul dispositivo
+            bpm = bpm.to(device).float()
+
+            # Forward pass
+            outputs = model(signal)
+            
+
+            # Calcola la loss del batch (per l'accumulo)
+            loss = loss_function(outputs, bpm)
+            
+            for i in range(batch_size):
+                print(f"Target: {bpm[i]} Predected: {outputs[i]} Loss: {loss}")
+
+            print()
+
+            # Calcola MAE per il batch
+            mae = torch.mean(torch.abs(outputs - bpm))
+
+            # Accumula le metriche, pesate per la dimensione del batch corrente
+            batch_size = signal.size(0)
+            total_test_loss += loss.item() * batch_size
+            total_test_mae += mae.item() * batch_size
+            num_samples += batch_size
+
+            # Aggiorna la descrizione di tqdm con la loss corrente del batch
+            #test_loop.set_description(f"Valutazione Test Set Loss: {loss.item():.4f}")
+
+
+    # Calcola le metriche medie sull'intero set di test
+    avg_test_loss = total_test_loss / num_samples
+    avg_test_mae = total_test_mae / num_samples
+    avg_test_rmse = math.sqrt(avg_test_loss) # RMSE è la radice quadrata dell'MSE medio
+
+    print("\n--- Risultati Test Set ---")
+    print(f"Test Loss (MSE): {avg_test_loss:.6f}")
+    print(f"Test MAE: {avg_test_mae:.6f}")
+    print(f"Test RMSE: {avg_test_rmse:.6f}")
+    print("--------------------------")
+
+    metrics = {
+        'test_loss': avg_test_loss,
+        'test_mae': avg_test_mae,
+        'test_rmse': avg_test_rmse
+    }
+
+    return metrics
+  
     
 def testModel(device: torch.device, datamodule: Mitbih_datamodule, model, **kwargs) -> None:
     pass
@@ -260,19 +336,21 @@ def main():
         sample_rate=sample_rate, 
         window_size_t=args.window_size,
         window_stride_t=args.window_stride,
-        num_workers=6,
-        batch_size=24
+        num_workers=4,
+        batch_size=12
     )
     
     #print(dataModule.train_dataset()[2])
     
     
     model = Transformer_BPM_Regressor(
-        max_token=args.window_size*sample_rate,
+        input_samples_num=args.window_size*sample_rate,
         in_channels=2,
+        conv_kernel_size=60,
+        conv_stride=60,
         d_model=args.d_model,
         head_num=8,
-        num_encoder_layers=4,
+        num_encoder_layers=10,
         dim_feedforward=args.dff,
         dropout=args.dropout_rate,
     )
@@ -292,7 +370,14 @@ def main():
         num_epochs = 40,
         training_log_path=os.path.join(setting.LOGS_FOLDER, 'training_logs.txt'),
         checkpoint_dir = setting.OUTPUT_PATH,
-        checkpoint = None
+        #checkpoint = "/app/Data/Models/Epoch[1]_Loss[inf].pth"
+    )
+    
+    test_model(
+        device = device,
+        datamodule = dataModule,
+        model = model,
+        checkpoint = "/app/Data/Models/Epoch[14]_Loss[261.5759].pth"
     )
     
     #dataModule.print_all_training_ecg_signals(os.path.join(setting.DATA_FOLDER_PATH, 'training_plots'))
