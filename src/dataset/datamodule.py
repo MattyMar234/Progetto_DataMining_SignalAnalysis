@@ -48,7 +48,13 @@ class Mitbih_datamodule(pl.LightningDataModule):
         self._TRAINING_DATASET = MITBIHDataset(mode=DatasetMode.TRAINING, sample_rate=sample_rate, sample_per_window=sample_per_window, sample_per_stride=sample_per_stride)
         self._VALIDATION_DATASET = MITBIHDataset(mode=DatasetMode.VALIDATION, sample_rate=sample_rate, sample_per_window=sample_per_window, sample_per_stride=sample_per_stride)
         self._TEST_DATASET = MITBIHDataset(mode=DatasetMode.TEST, sample_rate=sample_rate, sample_per_window=sample_per_window, sample_per_stride=sample_per_stride)
+    
+    def print_all_training_ecg_signals(self, output_folder: str) -> None:
+        os.makedirs(output_folder, exist_ok=True)
         
+        for s in sorted(MITBIHDataset.TRAINING_RECORDS):
+            self._TRAINING_DATASET.plot_all_windows_for_record(s, output_folder)
+            #MITBIHDataset.plot_all_windows_for_record()
         
     def train_dataloader(self) -> DataLoader:
         return DataLoader(self._TRAINING_DATASET, batch_size=self._batch_size, num_workers=self._num_workers, shuffle=True, pin_memory=self._pin_memory, persistent_workers=self._persistent_workers, drop_last=True, prefetch_factor=self._prefetch_factor)

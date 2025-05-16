@@ -1,10 +1,12 @@
 import argparse
+import math
 from typing import Final
-
+from tqdm.auto import tqdm
 import torch.optim as optim
 import torch
 import torch.nn as nn
-from tqdm.auto import tqdm
+from torch.optim import lr_scheduler
+
 
 from dataset.dataset import DatasetMode, MITBIHDataset
 from dataset.datamodule import Mitbih_datamodule
@@ -34,101 +36,166 @@ def trainModel(
     datamodule: Mitbih_datamodule, 
     model: nn.Module, 
     num_epochs: int,
-    checkpoint_dir: str = 'checkpoints',
-    checkpoint_filename: str | None = None
+    start_lr: float = 1e-3,
+    training_log_path:str | None = None,
+    checkpoint_dir: str | None =  None,
+    checkpoint: str | None = None
    ) -> None:
     
-    # Assicurati che la directory dei checkpoint esista
-    os.makedirs(checkpoint_dir, exist_ok=True)
-    #checkpoint_path = os.path.join(checkpoint_dir, checkpoint_filename)
-    start_epoch: int = 0
+    assert training_log_path is not None, "File log di training non specificato"
+    assert checkpoint_dir is not None, "Cartella dei checkpoint non specificata"
     
-    if checkpoint_filename is not None:
+    # Assicurati che la directory esista
+    os.makedirs(checkpoint_dir,     exist_ok=True)
+
+    
+    start_epoch: int = 0
+    best_val_loss = float('inf')
+
+    loss_function = nn.MSELoss()
+    optimizer = optim.Adam(model.parameters(), lr=start_lr)
+    
+    # Inizializza lo scheduler
+    scheduler = lr_scheduler.ReduceLROnPlateau(
+        optimizer,
+        mode='min',         # Monitora una metrica da minimizzare (validation loss)
+        factor=0.1,         # Fattore di riduzione del learning rate (LR = LR * factor)
+        patience=2,         # Numero di epoche senza miglioramenti prima di ridurre il LR
+        threshold=0.0001,   # Soglia per considerare un "miglioramento"
+        threshold_mode='rel' # La soglia è relativa al valore corrente
+    )
+    
+    
+    if checkpoint is not None:
         # Carica un checkpoint esistente se presente
-        if os.path.exists(checkpoint_filename):
-            print(f"Caricamento checkpoint da {checkpoint_filename}")
-            checkpoint = torch.load(checkpoint_filename, map_location=device)
-            model.load_state_dict(checkpoint['model_state_dict'])
-            optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
-            best_val_loss = checkpoint['loss']
-            start_epoch = checkpoint['epoch'] + 1
+        if os.path.exists(checkpoint):
+            print(f"Caricamento checkpoint da {checkpoint}")
+            checkpoint_data = torch.load(checkpoint, map_location=device)
+            model.load_state_dict(checkpoint_data['model_state_dict'])
+            optimizer.load_state_dict(checkpoint_data['optimizer_state_dict'])
+            scheduler.load_state_dict(checkpoint_data['scheduler_state_dict'])
+            best_val_loss = checkpoint_data['loss']
+            start_epoch = checkpoint_data['epoch'] + 1
             print(f"Riprendi l'addestramento dall'epoca {start_epoch} con validation loss {best_val_loss:.4f}")
 
 
     train_dataloader = datamodule.train_dataloader()
     val_dataloader = datamodule.val_dataloader()
-    
-    loss_function = nn.MSELoss()
-    optimizer = optim.Adam(model.parameters(), lr=0.001)
-
     model.to(device)
 
-    for epoch in range(start_epoch, num_epochs):
-        print(f"Epoca {epoch+1}/{num_epochs}")
+    with open(training_log_path, 'a') as log_file:
+        if os.stat(training_log_path).st_size != 0:
+            log_file.write(f"\n{'='*80}\n")
 
-        # --- Fase di Training ---
-        model.train()
-        train_loss = 0
-        # Utilizza tqdm per visualizzare l'avanzamento del training
-        train_loop = tqdm(train_dataloader, leave=False, desc=f"Training Epoca {epoch+1}")
-        for batch_idx, (signal, bpm) in enumerate(train_loop):
+        log_file.write("Epoch, lr, Train_Loss, Train_MAE, Train_RMSE, Val_Loss, Val_MAE, Val_RMSE\n")
+
+        
+        for epoch in range(start_epoch, num_epochs):
+            print(f"Epoca {epoch+1}/{num_epochs}")
+
+            # --- Fase di Training ---
+            model.train()
+            total_train_loss = 0 # Accumula la loss per l'epoca
+            total_train_mae = 0 # Accumula MAE per l'epoca
             
-            #print(signal.shape)
-    
-            signal = signal.to(device)
-            bpm = bpm.to(device)
-
-            optimizer.zero_grad()
-            outputs = model(signal)
-            loss = loss_function(outputs, bpm)
-
-            loss.backward()
-            optimizer.step()
-
-            train_loss += loss.item()
-
-            # Aggiorna la descrizione di tqdm con la loss corrente
-            train_loop.set_description(f"Training Epoca {epoch+1} Loss: {loss.item():.4f}")
-
-        avg_train_loss = train_loss / len(train_dataloader)
-
-        # --- Fase di Validation ---
-        model.eval()
-        val_loss = 0
-        # Utilizza tqdm per visualizzare l'avanzamento della validation
-        val_loop = tqdm(val_dataloader, leave=False, desc=f"Validation Epoca {epoch+1}")
-        with torch.no_grad():
-            for batch_idx, (signal, bpm) in enumerate(val_loop):
+            # Utilizza tqdm per visualizzare l'avanzamento del training
+            train_loop = tqdm(train_dataloader, leave=False, desc=f"Training Epoca {epoch+1}", )
+            for batch_idx, (signal, bpm) in enumerate(train_loop):
                 
+        
                 signal = signal.to(device)
                 bpm = bpm.to(device)
-                
-                outputs = model(signal)
-                loss = loss_function(outputs, bpm)
 
-                val_loss += loss.item()
+                optimizer.zero_grad()
+                outputs = model(signal)
+
+                # print(f"bpm shape: {bpm.shape}")
+                # print(f"outputs shape: {outputs.shape}")
+
+                loss = loss_function(outputs, bpm) # MSE Loss
+                mae = torch.mean(torch.abs(outputs - bpm)) # MAE per il batch
+
+                loss.backward()
+                optimizer.step()
+
+                total_train_loss += loss.item() * signal.size(0) # Moltiplica per la batch size per avere la somma reale
+                total_train_mae += mae.item() * signal.size(0) # Accumula MAE pesato per batch size
+
 
                 # Aggiorna la descrizione di tqdm con la loss corrente
-                val_loop.set_description(f"Validation Epoca {epoch+1} Loss: {loss.item():.4f}")
+                train_loop.set_description(f"Training Epoca {epoch+1} Loss: {loss.item():.4f}")
+
+            # Calcola le metriche medie per l'epoca di training
+            avg_train_loss = total_train_loss / len(train_dataloader.dataset) # Divisione per il numero totale di campioni
+            avg_train_mae = total_train_mae / len(train_dataloader.dataset)
+            avg_train_rmse = math.sqrt(avg_train_loss) # RMSE è la radice quadrata dell'MSE medio
 
 
-        avg_val_loss = val_loss / len(val_dataloader)
-
-        print(f"Epoca {epoch+1}: Training Loss = {avg_train_loss:.4f}, Validation Loss = {avg_val_loss:.4f}")
-
-        # --- Gestione Checkpoint ---
-        if avg_val_loss < best_val_loss:
-            best_val_loss = avg_val_loss
+            # --- Fase di Validation ---
+            model.eval()
+            total_val_loss = 0 # Accumula la loss per l'epoca
+            total_val_mae = 0 # Accumula MAE per l'epoca
             
-            checkpoint_path = os.path.join(checkpoint_dir, f"Epoch_{epoch+1}-{avg_val_loss}")
-            
-            print(f"Validation loss migliorata. Salvataggio modello in {checkpoint_path}")
+            # Utilizza tqdm per visualizzare l'avanzamento della validation
+            val_loop = tqdm(val_dataloader, leave=False, desc=f"Validation Epoca {epoch+1}")
+            with torch.no_grad():
+                for batch_idx, (signal, bpm) in enumerate(val_loop):
+                    
+                    signal = signal.to(device)
+                    bpm = bpm.to(device)
+                    
+                    outputs = model(signal)
+                    
+                    # MSE Loss
+                    loss = loss_function(outputs, bpm)
+
+                    # Calcola MAE per il batch
+                    mae = torch.mean(torch.abs(outputs - bpm.float()))
+                    
+                    total_val_loss += loss.item() * signal.size(0)
+                    total_val_mae += mae.item() * signal.size(0)
+                    
+                    # Aggiorna la descrizione di tqdm con la loss corrente
+                    val_loop.set_description(f"Validation Epoca {epoch+1} Loss: {loss.item():.4f}")
+
+
+             # Calcola le metriche medie per l'epoca di validation
+            avg_val_loss = total_val_loss / len(val_dataloader.dataset) # Divisione per il numero totale di campioni
+            avg_val_mae = total_val_mae / len(val_dataloader.dataset)
+            avg_val_rmse = math.sqrt(avg_val_loss) # RMSE è la radice quadrata dell'MSE medio
+
+
+            print(f"Epoca {epoch+1}: Training Loss = {avg_train_loss:.4f}, Validation Loss = {avg_val_loss:.4f}")
+
+            # Applica lo step dello scheduler, passandogli la validation loss
+            scheduler.step(avg_val_loss)
+
+            # --- Log dei risultati ---
+            log_file.write(f"{epoch+1}, {scheduler.get_last_lr()}, {avg_train_loss:.6f}, {avg_train_mae:.6f}, {avg_train_rmse:.6f}, {avg_val_loss:.6f}, {avg_val_mae:.6f}, {avg_val_rmse:.6f}\n")
+            log_file.flush() # Assicurati che i dati vengano scritti immediatamente sul disco
+
+
+            # --- Gestione Checkpoint ---
+            # Salva il modello migliore basato sulla validation loss
+            # if avg_val_loss < best_val_loss:
+            #     best_val_loss = avg_val_loss
+
+            # Definisci il percorso del file di checkpoint (salviamo solo il migliore)
+            # Potresti volerne tenere di più o nominarli diversamente
+            checkpoint_path = os.path.join(checkpoint_dir, f"Epoch[{epoch+1}]_Loss[{best_val_loss:.4f}].pth")
+
+            print(f"Validation loss migliorata ({best_val_loss:.4f}). Salvataggio modello in {checkpoint_path}")
             torch.save({
                 'epoch': epoch,
                 'model_state_dict': model.state_dict(),
                 'optimizer_state_dict': optimizer.state_dict(),
-                'loss': best_val_loss,
-            }, checkpoint_dir)
+                'scheduler_state_dict': scheduler.state_dict(), 
+                'best_val_loss': best_val_loss, # Salva il miglior loss raggiunto
+            }, checkpoint_path) # Salva nel file specificato
+
+
+
+
 
     print("Addestramento completato.")
     # # Opzionale: Carica il miglior modello addestrato prima di terminare la funzione
@@ -194,7 +261,7 @@ def main():
         window_size_t=args.window_size,
         window_stride_t=args.window_stride,
         num_workers=6,
-        batch_size=12
+        batch_size=24
     )
     
     #print(dataModule.train_dataset()[2])
@@ -222,57 +289,16 @@ def main():
         device = device,
         datamodule = dataModule,
         model = model,
-        num_epochs = 1,
+        num_epochs = 40,
+        training_log_path=os.path.join(setting.LOGS_FOLDER, 'training_logs.txt'),
         checkpoint_dir = setting.OUTPUT_PATH,
-        checkpoint_filename = None
+        checkpoint = None
     )
+    
+    #dataModule.print_all_training_ecg_signals(os.path.join(setting.DATA_FOLDER_PATH, 'training_plots'))
 
 
 if __name__ == "__main__":
     main()
     
     
-#     # --- Esempio di Utilizzo ---
-# if __name__ == "__main__":
-#     # SOSTITUISCI con il percorso effettivo dove hai scaricato il dataset MIT-BIH
-#     # ad esempio: './mit-bih-arrhythmia-database-1.0.0/'
-    
-
-#     # Crea un'istanza del dataset per il training
-#     try:
-       
-#         print(f"Dataset di Training creato con {len(train_dataset)} campioni.")
-
-#         # Puoi ora usare train_dataset con un DataLoader
-#         from torch.utils.data import DataLoader
-#         train_loader = DataLoader(train_dataset, batch_size=32, shuffle=True)
-
-#         # Esempio di iterazione sui primi batch
-#         print("\nEsempio di batch dal Training DataLoader:")
-#         for i, (segments, labels) in enumerate(train_loader):
-#             print(f"Batch {i}:")
-#             print(f"  Segmenti shape: {segments.shape}") # Dovrebbe essere [batch_size, 1, segment_length]
-#             print(f"  Etichette shape: {labels.shape}")   # Dovrebbe essere [batch_size]
-#             print(f"  Prime etichette nel batch: {labels[:10].tolist()}") # Stampa le prime 10 etichette
-#             if i == 2: # Stampa solo i primi 3 batch per l'esempio
-#                 break
-
-#         print("-" * 30)
-
-#         # Crea un'istanza del dataset per il testing
-#         test_dataset = MITBIHDataset(data_path=MITBIH_PATH, mode=DatasetMode.TEST, segment_length=360)
-#         print(f"\nDataset di Testing creato con {len(test_dataset)} campioni.")
-
-#         test_loader = DataLoader(test_dataset, batch_size=32, shuffle=False) # Shuffle=False per testing/validation
-
-#         # Esempio di recupero di un singolo campione
-#         print("\nEsempio di recupero di un singolo campione dal dataset di Test:")
-#         sample_segment, sample_label = test_dataset[0]
-#         print(f"  Segmento shape: {sample_segment.shape}") # Dovrebbe essere [1, segment_length]
-#         print(f"  Etichetta: {sample_label.item()}")
-
-#     except FileNotFoundError as e:
-#         print(f"Errore: {e}")
-#         print("Assicurati di aver scaricato il dataset MIT-BIH e specificato il percorso corretto.")
-#     except Exception as e:
-#          print(f"Si è verificato un errore: {e}")

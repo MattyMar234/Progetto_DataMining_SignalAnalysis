@@ -5,7 +5,7 @@ import numpy as np
 import os
 from torch.utils.data import Dataset
 from enum import Enum, auto
-from typing import Dict, List, Tuple
+from typing import Dict, Final, List, Tuple
 import pandas as pd
 import io
 from PIL import Image
@@ -13,25 +13,6 @@ from tqdm import tqdm
 import matplotlib.pyplot as plt
 
 
-# Mappatura dei tipi di battito alle classi AAMI
-# Raggruppamento AAMI Recommended Practice (ANSI/AAMI EC38:2000)
-# N: Normal beat (.'N', 'L', 'R', 'B') -> 0
-# SVEB: Supraventricular ectopic beat ('A', 'a', 'J', 'S') -> 1
-# VEB: Ventricular ectopic beat ('V', 'E') -> 2
-# F: Fusion beat ('F') -> 3
-# Q: Unknown beat ('Q', '/') -> 4
-# Ignoriamo altri simboli di annotazione non relativi ai battiti.
-AAMI_CLASSES = {
-    'N': 0, 'L': 0, 'R': 0, 'B': 0, '|': 0,
-    'A': 1, 'a': 1, 'J': 1, 'S': 1, 'j': 1,
-    'V': 2, 'E': 2 , '!': 2, 'e': 2,
-    'F': 3,
-    'Q': 4, '/': 4, '~': 4,
-    '+': 5, '\"': 5, '[': 5,
-    ']': 6,
-    'X': 7, 'x' : 7,
-
-}
 
 
 # Definizione delle modalità del dataset
@@ -41,15 +22,39 @@ class DatasetMode(Enum):
     TEST = auto()
     
 class SampleType(Enum):
-    NORMAL = "N L R B |"
-    SVEB = "A a J j S"
-    VEB = "V E ! e"
-    FUSION = "F f"
-    UNKNOWN = "Q / ~"
+    
+    #BEAT
+    NORMAL_N = "N"
+    NORMAL_L = "L"
+    NORMAL_R = "R"
+    NORMAL_B = "B"
+    NORMAL_LINE = "|"
+    
+    SVEB_A = "A"
+    SVEB_a = "a"
+    SVEB_J = "J"
+    SVEB_j = "j"
+    SVEB_S = "S"
+    
+    VEB_V = "V"
+    VEB_E = "E"
+    VEB_e = "e"
+    
+    FUSION_F = "F"
+    FUSION_f = "f"
+   
+    VENTRICULAR_FLUTTER_WAVE = "!"
+    UNKNOWN_BEAT_Q = "Q"
+    PACED_BEAT = "/"
+  
+    #ANNOTATION
+    
+    CHANGE_IN_SIGNAL_QUALITY = "~"
     NOISE = "X x"
     START_NOISE = "["
     END_NOISE = "]"
-    START_SEG = "+ \""
+    START_SEG_PLUS = "+"
+    COMMENT = "\""
     
     @classmethod
     def to_Label(cls, type: str) -> 'SampleType':
@@ -65,8 +70,6 @@ class SampleType(Enum):
         
        
 
-# Tipi di battito da includere (quelli mappati nelle classi AAMI)
-VALID_BEAT_SYMBOLS = list(AAMI_CLASSES.keys())
   
 class MITBIHDataset(Dataset):
     """
@@ -87,7 +90,7 @@ class MITBIHDataset(Dataset):
     _FILE_CHEKED: bool = False
     _DATASET_PATH: None | str = None
     
-    _RECORDS_MLII_V5_V2 = ['104', '102']
+    _RECORDS_V5_V2 = ['104', '102']
     _RECORDS_MLII_V1 = ['101','105','106', '107', '108', '109','111', '112','113','115', '116','118','119','121','122',
                         '200', '201', '202', '203', '205', '207', '208', '209', '210', '212','213', '214','215','217',
                         '219', '220', '221', '222', '223', '228', '230','231','232','233','234']
@@ -95,10 +98,10 @@ class MITBIHDataset(Dataset):
     _RECORDS_MLII_V4 = ['124']
     _RECORDS_MLII_V5 = ['100','114','123']
     
-    _ALL_RECORDS: list = _RECORDS_MLII_V1
-    _TRAINING_RECORDS: list = []
-    _VALIDATION_RECORDS: list = []
-    _TEST_RECORDS: list = []
+    ALL_RECORDS: Final[list] = _RECORDS_MLII_V1
+    TRAINING_RECORDS: list = []
+    VALIDATION_RECORDS: list = []
+    TEST_RECORDS: list = []
     
 
     _RISOLUZIONE_ADC: int = 11
@@ -129,7 +132,7 @@ class MITBIHDataset(Dataset):
         
  
         # Controlla se i file CSV e TXT esistono
-        for record_name in cls._ALL_RECORDS:
+        for record_name in cls.ALL_RECORDS:
             csv_filepath = os.path.join(path, f"{record_name}.csv")
             txt_filepath = os.path.join(path, f"{record_name}annotations.txt")
 
@@ -149,12 +152,16 @@ class MITBIHDataset(Dataset):
         val_ratio = 0.1
         test_ratio = 0.1
         
-        train_indices, temp_indices = train_test_split(cls._ALL_RECORDS, test_size=(val_ratio + test_ratio), random_state=42)
+        train_indices, temp_indices = train_test_split(cls.ALL_RECORDS, test_size=(val_ratio + test_ratio), random_state=42)
         val_indices, test_indices = train_test_split(temp_indices, test_size=(test_ratio / (val_ratio + test_ratio)), random_state=42)
 
-        cls._TRAINING_RECORDS = train_indices
-        cls._VALIDATION_RECORDS = val_indices
-        cls._TEST_RECORDS = test_indices
+        cls.TRAINING_RECORDS = train_indices
+        cls.VALIDATION_RECORDS = val_indices
+        cls.TEST_RECORDS = test_indices
+        
+        # cls._TRAINING_RECORDS = [train_indices[0]]
+        # cls._VALIDATION_RECORDS = [val_indices[0]]
+        # cls._TEST_RECORDS = [test_indices[0]]
         
     
     def __init__(self, *, mode: DatasetMode, sample_rate: int = 360, sample_per_window: int = 360, sample_per_stride: int = 180):
@@ -171,13 +178,13 @@ class MITBIHDataset(Dataset):
         
 
         if mode == DatasetMode.TRAINING:
-            self.record_list = MITBIHDataset._TRAINING_RECORDS
+            self.record_list = MITBIHDataset.TRAINING_RECORDS
             
         elif mode == DatasetMode.VALIDATION:
-            self.record_list = MITBIHDataset._VALIDATION_RECORDS
+            self.record_list = MITBIHDataset.VALIDATION_RECORDS
             
         elif mode == DatasetMode.TEST:
-            self.record_list = MITBIHDataset._TEST_RECORDS
+            self.record_list = MITBIHDataset.TEST_RECORDS
             
         else:
             raise ValueError(f"Modalità non valida: {mode}")
@@ -196,7 +203,7 @@ class MITBIHDataset(Dataset):
         """
         Plotta una finestra del segnale ECG dato l'indice.
         """
-        window = self.__getitem__(idx)
+        window = self.get(idx)
         signal = window['signal']
         record_name = window['record_name']
         start = window['start']
@@ -242,7 +249,7 @@ class MITBIHDataset(Dataset):
             plt.text(p-1, 0.90, str(tag.value), color='blue', rotation=0, fontsize=8, ha='center', va='bottom')
 
         # Mostra il valore del BPM sotto il grafico
-        plt.figtext(0.5, 0.01, f"BPM: {window['BPM']:.2f}", ha='center', fontsize=10, color='green')
+        plt.figtext(0.5, 0.01, f"BPM: {window['BPM'].item():.2f}", ha='center', fontsize=10, color='green')
         
         if save:
             plt.savefig(output_filepath)
@@ -255,8 +262,8 @@ class MITBIHDataset(Dataset):
             img = Image.open(buf)
             return img
       
-        
-    def plot_all_windows_for_record(self, record_name: str):
+       
+    def plot_all_windows_for_record(self, record_name: str, output_dir:str):
         """
         Plotta tutte le finestre di un record in modo continuo.
         """
@@ -270,7 +277,7 @@ class MITBIHDataset(Dataset):
             print(f"Nessuna finestra trovata per il record {record_name}.")
             return
 
-        output_dir = os.path.join(MITBIHDataset._DATASET_PATH, "plots")
+        #output_dir = os.path.join(MITBIHDataset._DATASET_PATH, "plots")
         os.makedirs(output_dir, exist_ok=True)
         output_filepath = os.path.join(output_dir, f"{record_name}_all_windows_ecg_plot.png")
 
@@ -457,7 +464,13 @@ class MITBIHDataset(Dataset):
                         
                           
                         match beat_type:
-                            case SampleType.NORMAL | SampleType.SVEB | SampleType.VEB | SampleType.FUSION:
+                            case SampleType.NORMAL_N | SampleType.NORMAL_L | SampleType.NORMAL_R | SampleType.NORMAL_B | SampleType.NORMAL_LINE\
+                                | SampleType.SVEB_A | SampleType.SVEB_a | SampleType.SVEB_J | SampleType.SVEB_j | SampleType.SVEB_S\
+                                | SampleType.VEB_V | SampleType.VEB_E | SampleType.VEB_e \
+                                | SampleType.FUSION_F | SampleType.FUSION_f \
+                                | SampleType.UNKNOWN_BEAT_Q | SampleType.PACED_BEAT | SampleType.VENTRICULAR_FLUTTER_WAVE:
+                                    
+                                             
                                 #cero tutte le finestre dove posso inserire l'annotazione
                                 fist: bool = True
                                 inc: bool = False
@@ -478,7 +491,7 @@ class MITBIHDataset(Dataset):
                                 # if inc:
                                 #     i_pointer += 1
                                        
-                            case SampleType.UNKNOWN | SampleType.START_SEG | SampleType.END_NOISE | SampleType.START_NOISE | SampleType.NOISE | SampleType.UNKNOWN:
+                            case SampleType.START_SEG_PLUS | SampleType.COMMENT | SampleType.END_NOISE | SampleType.START_NOISE | SampleType.NOISE | SampleType.CHANGE_IN_SIGNAL_QUALITY:
                                 
                                 for w in range(0, len(record_windows)):
                                     current_window = record_windows[w]

@@ -1,16 +1,17 @@
 from logging import Logger
 from typing import Final
+from pathlib import Path
 import os
 
 #============================ PATHS ============================#
-APP_FOLDER: Final[str] = os.path.sep.join(os.getcwd().split(os.path.sep)[0:-1])
+APP_FOLDER: Final[str] = str(Path(__file__).parent.absolute().parent.absolute())
 DATASET_PATH: Final[str] = os.path.join(APP_FOLDER, 'Dataset', 'mitbih_database')
 
-DATA_PATH: Final[str] = os.path.join(APP_FOLDER, "Data")
-OUTPUT_PATH: Final[str] = os.path.join(DATA_PATH, 'Models')
+DATA_FOLDER_PATH: Final[str] = os.path.join(APP_FOLDER, "Data")
+OUTPUT_PATH: Final[str] = os.path.join(DATA_FOLDER_PATH, 'Models')
 
-if not os.path.exists(DATA_PATH):
-    os.makedirs(DATA_PATH)
+if not os.path.exists(DATA_FOLDER_PATH):
+    os.makedirs(DATA_FOLDER_PATH)
     
 if not os.path.exists(OUTPUT_PATH):
     os.makedirs(OUTPUT_PATH)
@@ -38,8 +39,8 @@ WINDOW_STRIDE: Final[int] = 5
 
 
 #============================= logs =============================#
-LOGS_FOLDER: Final[str] = os.path.join(DATA_PATH, 'logs')
-LOGGERS_CONFIG_FILE: Final[str] = os.path.join(DATA_PATH, 'loggerConfig.json')
+LOGS_FOLDER: Final[str] = os.path.join(DATA_FOLDER_PATH, 'logs')
+LOGGERS_CONFIG_FILE: Final[str] = os.path.join(DATA_FOLDER_PATH, 'loggerConfig.json')
 
 if not os.path.exists(LOGS_FOLDER):
     os.makedirs(LOGS_FOLDER)
