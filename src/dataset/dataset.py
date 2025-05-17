@@ -531,6 +531,8 @@ class MITBIHDataset(Dataset):
                     
                     #print(f"Finestra {i} BPM: {current_window['BPM']}")
                     
+                    
+                    
                     current_window['BPM'] = torch.Tensor([bpm]).float()
                     self._windows[windows_counter] = current_window
                     windows_counter += 1
@@ -584,5 +586,144 @@ class MITBIHDataset(Dataset):
         
         window_data = self._windows[idx]
         return window_data['signal'], window_data['BPM']
+
+
+    def plot_bpm_distribution(self, output_filepath: str):
+        """
+        Realizza e salva un diagramma della distribuzione dei valori di BPM
+        presenti nelle finestre del dataset, evidenziando il valore più frequente
+        e elencando i file per ogni intervallo di BPM sotto il grafico.
+
+        Args:
+            output_filepath (str): Il percorso completo dove salvare l'immagine del grafico.
+        """
+        if not self._windows:
+            print(f"Nessuna finestra caricata per la modalità {self.mode.name}.")
+            return
+
+        all_bpms = []
+        # Dizionario per raccogliere i record per intervallo di BPM
+        records_by_bpm_bin = {}
+
+        for window_data in self._windows.values():
+            # Converti il tensore a scalare Python e aggiungi alla lista
+            bpm = window_data['BPM'].item()
+            record_name = window_data['record_name']
+            all_bpms.append(bpm)
+
+            # Temporaneamente, raccogliamo solo i BPM. Li assoceremo ai bin dopo aver calcolato l'istogramma
+            # per garantire che usiamo gli stessi bin per il plot e per l'elenco.
+
+
+        if not all_bpms:
+            print("Nessun valore di BPM trovato.")
+            return
+
+        all_bpms_np = np.array(all_bpms)
+
+        # Calcola l'istogramma e i bin
+        # Usa density=False per ottenere i conteggi effettivi
+        counts, bin_edges = np.histogram(all_bpms_np, bins='auto', density=False)
+
+        # Trova l'indice del bin con la frequenza massima
+        max_count_index = np.argmax(counts)
+
+        # Trova il valore di BPM più frequente (centro del bin con max count)
+        mode_bpm_value = (bin_edges[max_count_index] + bin_edges[max_count_index + 1]) / 2
+
+        # Ora associamo i record ai bin basati sui bin_edges calcolati
+        for window_data in self._windows.values():
+            bpm = window_data['BPM'].item()
+            record_name = window_data['record_name']
+            # Trova l'indice del bin a cui appartiene questo BPM.
+            # np.digitize restituisce l'indice del bin *alla destra* del valore,
+            # eccetto per il bordo destro dell'ultimo bin.
+            bin_index = np.digitize(bpm, bin_edges) - 1 # -1 per allineare con gli indici di `counts` e `bin_edges`
+
+            # Assicurati che l'indice sia valido (0 <= bin_index < len(counts))
+            if 0 <= bin_index < len(counts):
+                bin_range_key = (bin_edges[bin_index], bin_edges[bin_index + 1])
+                if bin_range_key not in records_by_bpm_bin:
+                    records_by_bpm_bin[bin_range_key] = set() # Usa un set per evitare duplicati
+                records_by_bpm_bin[bin_range_key].add(record_name)
+
+        # Ordina gli intervalli di BPM per una migliore leggibilità
+        sorted_bpm_bins = sorted(records_by_bpm_bin.keys())
+
+        # Prepara il testo per l'elenco dei file
+        text_list = ["Files per intervallo di BPM:"]
+        for bin_range in sorted_bpm_bins:
+            records = sorted(list(records_by_bpm_bin[bin_range])) # Ordina i nomi dei record
+            # Formatta l'intervallo del bin
+            if bin_range == sorted_bpm_bins[-1]: # Ultimo bin, usa [] per includere il bordo superiore
+                bin_text = f"  [{bin_range[0]:.2f} - {bin_range[1]:.2f}] BPM: {', '.join(records)}"
+            else: # Altri bin, usa [)
+                bin_text = f"  [{bin_range[0]:.2f} - {bin_range[1]:.2f}) BPM: {', '.join(records)}"
+            text_list.append(bin_text)
+
+        file_list_text = "\n".join(text_list)
+
+        # Stima l'altezza necessaria per il testo basata sul numero di righe e sulla dimensione del font.
+        # Questa è una stima grezza e potrebbe richiedere aggiustamenti.
+        text_line_height_inches = 0.15 # Stima altezza per riga in pollici per fontsize 9
+        num_text_lines = len(text_list)
+        required_text_height_inches = num_text_lines * text_line_height_inches
+        text_buffer_inches = 0.5 # Buffer aggiuntivo sotto il testo per spaziatura
+
+        # Altezza desiderata per l'area principale del grafico in pollici
+        desired_plot_height_inches = 6
+        figure_width_inches = 12
+
+        # Calcola l'altezza totale della figura necessaria
+        total_figure_height_inches = desired_plot_height_inches + required_text_height_inches + text_buffer_inches
+
+        # Crea la figura con l'altezza totale calcolata
+        fig, ax = plt.subplots(figsize=(figure_width_inches, total_figure_height_inches))
+
+        # Plotta l'istogramma sugli assi principali 'ax'
+        ax.hist(all_bpms_np, bins=bin_edges, edgecolor='black', alpha=0.7)
+
+        # Aggiungi marker per il valore più frequente
+        modal_bin_height = counts[max_count_index]
+        ax.plot(mode_bpm_value, modal_bin_height, 'r*', markersize=15, label=f'Valore più frequente: {mode_bpm_value:.2f}')
+
+        ax.set_title(f"Distribuzione dei valori di BPM per la modalità {self.mode.name}")
+        ax.set_xlabel("Battiti per minuto (BPM)")
+        ax.set_ylabel("Frequenza")
+        ax.legend()
+        ax.grid(axis='y', alpha=0.75)
+
+        # Calcola il parametro 'bottom' per subplots_adjust.
+        # Questo è il rapporto tra lo spazio necessario per il testo (più buffer)
+        # e l'altezza totale della figura.
+        bottom_margin_fraction = (required_text_height_inches + text_buffer_inches) / total_figure_height_inches
+
+        # Aggiusta i parametri del subplot per fare spazio al testo nella parte inferiore.
+        # Il parametro 'bottom' è la posizione del bordo inferiore dei subplot,
+        # relativa al bordo inferiore della figura (0=fondo, 1=cima).
+        # Imposta anche 'top' per definire lo spazio sopra il grafico.
+        fig.subplots_adjust(bottom=bottom_margin_fraction, top=0.95)
+
+        # Aggiungi il testo sotto il grafico.
+        # Posiziona il testo partendo dal bordo sinistro (0.02) e leggermente sopra
+        # il bordo inferiore della figura (0.01).
+        # 'transform=fig.transFigure' posiziona il testo rispetto all'intera figura
+        # (0,0 è l'angolo in basso a sinistra, 1,1 è in alto a destra).
+        # 'va='bottom'' allinea il bordo inferiore del blocco di testo alla posizione y.
+        fig.text(0.02, 0.01, file_list_text, fontsize=9, va='bottom', ha='left', wrap=True)
+
+
+        # Assicurati che la directory di output esista
+        output_dir = os.path.dirname(output_filepath)
+        if output_dir and not os.path.exists(output_dir):
+            os.makedirs(output_dir)
+            print(f"Creata directory: {output_dir}")
+
+        # Salva il grafico
+        plt.savefig(output_filepath)
+        plt.close(fig) # Chiudi la figura per liberare memoria
+
+
+        print(f"Diagramma della distribuzione dei BPM con elenco file salvato in: {output_filepath}")
 
 

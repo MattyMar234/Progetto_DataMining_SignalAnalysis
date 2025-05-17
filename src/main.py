@@ -334,8 +334,8 @@ def main():
     dataModule = Mitbih_datamodule(
         args.dataset_path, 
         sample_rate=sample_rate, 
-        window_size_t=args.window_size,
-        window_stride_t=args.window_stride,
+        window_size_t=5,#args.window_size,
+        window_stride_t=5,#args.window_stride,
         num_workers=4,
         batch_size=12
     )
@@ -346,8 +346,8 @@ def main():
     model = Transformer_BPM_Regressor(
         input_samples_num=args.window_size*sample_rate,
         in_channels=2,
-        conv_kernel_size=60,
-        conv_stride=60,
+        conv_kernel_size=100,
+        conv_stride=100,
         d_model=args.d_model,
         head_num=8,
         num_encoder_layers=10,
@@ -363,25 +363,27 @@ def main():
     print(f"Utilizzando dispositivo: {device}")
 
 
-    trainModel(
-        device = device,
-        datamodule = dataModule,
-        model = model,
-        num_epochs = 40,
-        training_log_path=os.path.join(setting.LOGS_FOLDER, 'training_logs.txt'),
-        checkpoint_dir = setting.OUTPUT_PATH,
-        #checkpoint = "/app/Data/Models/Epoch[1]_Loss[inf].pth"
-    )
+    # trainModel(
+    #     device = device,
+    #     datamodule = dataModule,
+    #     model = model,
+    #     num_epochs = 15,
+    #     training_log_path=os.path.join(setting.LOGS_FOLDER, 'training_logs.txt'),
+    #     checkpoint_dir = setting.OUTPUT_PATH,
+    #     #checkpoint = "/app/Data/Models/Epoch[1]_Loss[inf].pth"
+    # )
     
     test_model(
         device = device,
         datamodule = dataModule,
         model = model,
-        checkpoint = "/app/Data/Models/Epoch[14]_Loss[261.5759].pth"
+        checkpoint = "/app/Data/Models/Epoch[12]_Loss[334.8916].pth"
     )
     
     #dataModule.print_all_training_ecg_signals(os.path.join(setting.DATA_FOLDER_PATH, 'training_plots'))
-
+    #dataModule.print_training_plot_bpm_distribution(os.path.join(setting.DATA_FOLDER_PATH, 'training_plots'))
+    #dataModule.print_training_record('207',os.path.join(setting.DATA_FOLDER_PATH, 'test_plot'))
+    
 
 if __name__ == "__main__":
     main()
