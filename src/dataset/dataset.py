@@ -1,3 +1,4 @@
+import random
 from sklearn.model_selection import train_test_split
 import torch
 import wfdb
@@ -5,7 +6,7 @@ import numpy as np
 import os
 from torch.utils.data import Dataset
 from enum import Enum, auto
-from typing import Dict, Final, List, Tuple
+from typing import Any, Dict, Final, List, Tuple
 import pandas as pd
 import io
 from PIL import Image
@@ -13,7 +14,7 @@ from tqdm import tqdm
 import matplotlib.pyplot as plt
 
 
-
+from sklearn.utils.class_weight import compute_class_weight
 
 # Definizione delle modalità del dataset
 class DatasetMode(Enum):
@@ -108,6 +109,8 @@ class MITBIHDataset(Dataset):
     _MIN_VALUE: int = 0
     _MAX_VALUE: int = 2**_RISOLUZIONE_ADC - 1
     _MAX_SAMPLE_NUM: int = 650000
+    _MAX_BPM=260
+    _MIN_BPM=0
     
     
     def __new__(cls, *args, **kwargs):
@@ -130,6 +133,8 @@ class MITBIHDataset(Dataset):
             raise FileNotFoundError(f"La directory specificata non esiste: {path}")
         print(f"Percorso del dataset impostato su: {cls._DATASET_PATH}")
         
+        min_list = []
+        max_list = []
  
         # Controlla se i file CSV e TXT esistono
         for record_name in cls.ALL_RECORDS:
@@ -141,6 +146,69 @@ class MITBIHDataset(Dataset):
             if not os.path.exists(txt_filepath):
                 raise FileNotFoundError(f"File TXT non trovato: {txt_filepath}")
 
+   
+            current_record_name = record_name
+            csv_filepath = os.path.join(MITBIHDataset._DATASET_PATH, f"{record_name}.csv")
+            #txt_filepath = os.path.join(MITBIHDataset._DATASET_PATH, f"{record_name}annotations.txt")
+
+    
+            # --- Leggi il segnale dal file CSV ---
+            # Si aspetta colonne: 'sample #','MLII','V5'
+            df = pd.read_csv(csv_filepath)
+            
+            for idx, col in enumerate(df.columns):
+                df = df.rename(columns={df.columns[idx]: df.columns[idx].replace('\'', '')}) # Rinomina la prima colonna in 'sample #'
+
+            signal: torch.Tensor | None = None
+            
+            if MITBIHDataset._MLII_COL in df.columns:
+                signal = torch.from_numpy(df[MITBIHDataset._MLII_COL].values).unsqueeze(0)
+            
+            if MITBIHDataset._V1_COL in df.columns:
+                if signal is None:
+                    signal = torch.from_numpy(df[MITBIHDataset._V1_COL].values).unsqueeze(0)
+                else:
+                    signal = torch.cat((signal, torch.from_numpy(df[MITBIHDataset._V1_COL].values).unsqueeze(0)), dim=0)
+            
+            if MITBIHDataset._V2_COL in df.columns:
+                if signal is None:
+                    signal = torch.from_numpy(df[MITBIHDataset._V2_COL].values).unsqueeze(0)
+                else:
+                    signal = torch.cat((signal, torch.from_numpy(df[MITBIHDataset._V2_COL].values).unsqueeze(0)), dim=0)
+        
+            # if MITBIHDataset._V3_COL in df.columns:
+            #     if signal is None:
+            #         signal = torch.from_numpy(df[MITBIHDataset._V3_COL].values).unsqueeze(0)
+            #     else:
+            #         signal = torch.cat((signal, torch.from_numpy(df[MITBIHDataset._V3_COL].values).unsqueeze(0)), dim=0)
+            
+            if MITBIHDataset._V4_COL in df.columns:
+                if signal is None:
+                    signal = torch.from_numpy(df[MITBIHDataset._V4_COL].values).unsqueeze(0)
+                else:
+                    signal = torch.cat((signal, torch.from_numpy(df[MITBIHDataset._V4_COL].values).unsqueeze(0)), dim=0)
+            
+            if MITBIHDataset._V5_COL in df.columns:
+                if signal is None:
+                    signal = torch.from_numpy(df[MITBIHDataset._V5_COL].values).unsqueeze(0)
+                else:
+                    signal = torch.cat((signal, torch.from_numpy(df[MITBIHDataset._V5_COL].values).unsqueeze(0)), dim=0)
+            
+        
+
+            # Normalizza il segnale
+            signal = signal.float() 
+            max_value = torch.max(signal).item()
+            min_value = torch.min(signal).item()
+
+            max_list.append(max_value)
+            min_list.append(min_value)
+
+        cls._MAX_VALUE = max(max_list)
+        cls._MIN_VALUE = min(min_list)
+        print(f"Valore massimo trovato: {cls._MAX_VALUE}")
+        print(f"Valore minimo trovato: {cls._MIN_VALUE}")
+        
         cls._FILE_CHEKED = True
         
         
@@ -176,6 +244,9 @@ class MITBIHDataset(Dataset):
         self.samples_per_window = sample_per_window
         self.samples_per_side = sample_per_stride
         
+        self.bpm_bins: torch.Tensor | None = None
+        self.bin_weights: torch.Tensor | None = None
+        
 
         if mode == DatasetMode.TRAINING:
             self.record_list = MITBIHDataset.TRAINING_RECORDS
@@ -195,7 +266,8 @@ class MITBIHDataset(Dataset):
     
         self._signals_dict = {} # Dizionario per memorizzare i segnali
         self._windows: Dict[int, Dict[str, any]] = {} 
-        self._file_windows: Dict[str, Dict[int, Dict[str, any]]] = {}
+        self._record_windows: Dict[str, Dict[int, Dict[str, any]]] = {}
+        self._BPM_toWindows: Dict[int, list] = {}
         self._load_data()
         
         
@@ -267,11 +339,11 @@ class MITBIHDataset(Dataset):
         """
         Plotta tutte le finestre di un record in modo continuo.
         """
-        if record_name not in self._file_windows:
+        if record_name not in self._record_windows:
             print(f"Record {record_name} non trovato in self._file_windows.")
             return
 
-        windows = self._file_windows[record_name]
+        windows = self._record_windows[record_name]
         num_windows = len(windows)
         if num_windows == 0:
             print(f"Nessuna finestra trovata per il record {record_name}.")
@@ -288,7 +360,7 @@ class MITBIHDataset(Dataset):
         
         
         for i in tqdm(range(num_windows), desc=f"Plotting windows for record {record_name}"):
-            img = self.plot_windows(idx=i + sum(len(self._file_windows[r]) for r in self.record_list if r < record_name), asfile=False, save=False)
+            img = self.plot_windows(idx=i + sum(len(self._record_windows[r]) for r in self.record_list if r < record_name), asfile=False, save=False)
             if img is not None:
                 window_imgs.append(img.convert("RGB"))
 
@@ -316,14 +388,14 @@ class MITBIHDataset(Dataset):
         # plt.close()
         
         
-      
-        
 
     def _load_data(self):
+        """Carica i dati dai record selezionati (CSV per segnale, TXT per annotazioni)."""
         
         windows_counter:int = 0
         current_record_name:str | None = None
-        """Carica i dati dai record selezionati (CSV per segnale, TXT per annotazioni)."""
+        all_initial_windows: List[Dict[str, Any]] = []
+        BPM_value = {n: 0 for n in range(0,261)}
         
         try:
     
@@ -332,9 +404,10 @@ class MITBIHDataset(Dataset):
                 csv_filepath = os.path.join(MITBIHDataset._DATASET_PATH, f"{record_name}.csv")
                 txt_filepath = os.path.join(MITBIHDataset._DATASET_PATH, f"{record_name}annotations.txt")
 
-        
+                #========================================================================#
+                # ESTRAGGO IL SEGNALE
+                #========================================================================#
                 # --- Leggi il segnale dal file CSV ---
-                # Si aspetta colonne: 'sample #','MLII','V5'
                 df = pd.read_csv(csv_filepath)
                 
                 for idx, col in enumerate(df.columns):
@@ -376,21 +449,20 @@ class MITBIHDataset(Dataset):
                         signal = torch.cat((signal, torch.from_numpy(df[MITBIHDataset._V5_COL].values).unsqueeze(0)), dim=0)
                 
             
-
                 # Normalizza il segnale
                 signal = signal.float() 
                 signal = (signal - MITBIHDataset._MIN_VALUE) / (MITBIHDataset._MAX_VALUE - MITBIHDataset._MIN_VALUE) 
-                
-            
                 
                 # Salva il segnale per il record corrente
                 self._signals_dict[record_name] = signal 
                 
                 
+                #========================================================================#
+                # REALIZZAZIONE DELLE FINESTRE
+                #========================================================================#
                 windows_number:float = ((len(signal[0]) - self.samples_per_window) / self.samples_per_side) + 1
                 windows_number_int = int(windows_number)
                 record_windows: list = []
-            
             
                 #creazione delle finestre
                 for i in range(windows_number_int):
@@ -438,19 +510,18 @@ class MITBIHDataset(Dataset):
                 
                 #print(f"Record {record_name} ha {len(record_windows)} finestre.")
                 
+                #========================================================================#
+                # ASSEGNAZIONE DEI BEAT E TAG ALLE FINESTRE
+                #========================================================================#
                 window_pointer: int = 0
                 current_window = record_windows[window_pointer]
                 window_start = current_window['start']
                 window_end = current_window['end']
-                i_pointer: int = 0
-                j_pointer: int = 0
                 
                 with open(txt_filepath, 'r') as f:
                     f.readline() # Salta la prima riga (header)
                     
                     for line in f:
-
-                        
                         line = line.strip()  # Rimuovi spazi bianchi
                         parts = line.split() # Dividi la riga in base agli spazi e ignore le stringe vuote
 
@@ -462,18 +533,17 @@ class MITBIHDataset(Dataset):
                         sample_pos = int(parts[1])            # Indice del campione
                         time = self._formatTime(parts[0]) # Tempo in secondi
                         
-                          
+                        #Verifico il tipo di annotazione
                         match beat_type:
+                            
+                            #Se è un beat
                             case SampleType.NORMAL_N | SampleType.NORMAL_L | SampleType.NORMAL_R | SampleType.NORMAL_B | SampleType.NORMAL_LINE\
                                 | SampleType.SVEB_A | SampleType.SVEB_a | SampleType.SVEB_J | SampleType.SVEB_j | SampleType.SVEB_S\
                                 | SampleType.VEB_V | SampleType.VEB_E | SampleType.VEB_e \
                                 | SampleType.FUSION_F | SampleType.FUSION_f \
                                 | SampleType.UNKNOWN_BEAT_Q | SampleType.PACED_BEAT | SampleType.VENTRICULAR_FLUTTER_WAVE:
                                     
-                                             
-                                #cero tutte le finestre dove posso inserire l'annotazione
-                                fist: bool = True
-                                inc: bool = False
+                                            
                                 #for w in range(max(0 , i_pointer), min(i_pointer+2, len(record_windows))):
                                 for w in range(0, len(record_windows)):
                                     current_window = record_windows[w]
@@ -485,12 +555,8 @@ class MITBIHDataset(Dataset):
                                         current_window['beat_labels'].append(beat_type)
                                         current_window['beat_number'] += 1
                                         current_window['beat_time'].append(time)
-                                #     elif fist:
-                                #         inc = True
-                                #         fist = False
-                                # if inc:
-                                #     i_pointer += 1
-                                       
+                                
+                            #se è un tag utile      
                             case SampleType.START_SEG_PLUS | SampleType.COMMENT | SampleType.END_NOISE | SampleType.START_NOISE | SampleType.NOISE | SampleType.CHANGE_IN_SIGNAL_QUALITY:
                                 
                                 for w in range(0, len(record_windows)):
@@ -502,17 +568,17 @@ class MITBIHDataset(Dataset):
                                         current_window['tag_positions'].append(sample_pos)
                                         current_window['tag'].append(beat_type)
                                      
-                            
+                            # Se il tipo di battito non è valido, ignora
                             case _:
-                                # Se il tipo di battito non è valido, ignora
-                                print(f"Tipo di battito sconosciuto: {parts[2]}. Ignorato.")
+                                print(f"Annotazione ignorata: {parts[2]}.")
                                 continue
 
-                        
-        
-                for i in range(len(record_windows)):
-                    bpm: float = 0
-                    current_window = record_windows[i]
+                #========================================================================#
+                # CACOLO DEL BPM DELLA FINESTRA
+                #========================================================================#                       
+                for current_window in (record_windows):
+                    bpm: int = 0
+                    
                     #current_window['BPM'] = current_window['beat_number'] * ((60*self.sample_rate)/self.samples_per_window) 
                     
                     # Calcola il BPM come media della distanza tra i diversi beat (RR interval)
@@ -525,19 +591,144 @@ class MITBIHDataset(Dataset):
                         else:
                             bpm = 0
                     elif len(beat_times) == 1:
+                        print(f"Finestra con un solo BPM in {current_window['record_name']}")
                         bpm = 0  # Solo un beat, impossibile calcolare BPM
                     else:
                         bpm = 0  # Nessun beat nella finestra
                     
                     #print(f"Finestra {i} BPM: {current_window['BPM']}")
                     
+                    if bpm > MITBIHDataset._MAX_BPM:
+                        bpm = MITBIHDataset._MAX_BPM
+
+                    bpm = int(bpm)
+                    BPM_value[bpm] += 1
                     
+                    current_window['BPM'] = torch.Tensor([bpm]).to(torch.float32)
+                    # self._windows[windows_counter] = current_window
+                    # windows_counter += 1
                     
-                    current_window['BPM'] = torch.Tensor([bpm]).float()
-                    self._windows[windows_counter] = current_window
-                    windows_counter += 1
+                    if self._BPM_toWindows.get(bpm) is None:
+                        self._BPM_toWindows[bpm] = [current_window]
+                    else:
+                        self._BPM_toWindows[bpm].append(current_window)
+            
+                #associso al record le sue finestre
+                self._record_windows[record_name] = record_windows
+            
           
-                self._file_windows[record_name] = record_windows
+          
+            if self.mode != DatasetMode.TRAINING:
+                windows_counter = 0
+                for record_name in self.record_list:
+                    for w in self._record_windows[record_name]:
+                        self._windows[windows_counter] = w
+                        windows_counter += 1
+                return
+            
+            #========================================================================#
+            # SOVRACAMPIONAMENTO
+            #========================================================================# 
+            
+            print("\nApplying oversampling...")
+            # 1. Trova il valore di BPM più frequente
+            # Using BPM_value which counts occurrences of each BPM
+            most_common_bpm_val = 0
+            max_count = 0
+            for bpm_key, count in BPM_value.items():
+                if count > max_count:
+                    max_count = count
+                    most_common_bpm_val = bpm_key
+
+            print(f"Most frequent BPM value: {most_common_bpm_val} with {max_count} occurrences.")
+
+            # 2. Determina la quantità di finestre da replicare per bilanciare
+            # We aim to bring other classes closer to the most_common_bpm_val count.
+            # A simple strategy is to make all classes at least have `max_count` windows
+            # or a multiple of `max_count` (e.g., `max_count * oversample_factor`).
+
+            #target_count_for_oversampling = int(max_count * self.oversample_factor)
+            #print(f"Target count for oversampling (max_count * oversample_factor): {target_count_for_oversampling}")
+            target_count_for_oversampling = max_count
+
+            oversampled_windows = []
+            for bpm_key, windows_list in self._BPM_toWindows.items():
+                if windows_list is None or len(windows_list) == 0:
+                    continue
+                
+                # if bpm_key == most_common_bpm_val:
+                #     oversampled_windows.extend(windows_list)
+                #     continue
+
+                current_count = len(windows_list)
+                if current_count < target_count_for_oversampling:
+                    num_to_replicate = target_count_for_oversampling - current_count
+                    print(f"Oversampling BPM {bpm_key}: replicating {num_to_replicate} windows (current: {current_count})")
+                    # Randomly sample with replacement from the current windows_list
+                    replicated_windows = random.choices(windows_list, k=num_to_replicate)
+                    oversampled_windows.extend(windows_list)
+                    oversampled_windows.extend(replicated_windows)
+                else:
+                    oversampled_windows.extend(windows_list)
+            BPM_value = {n: 0 for n in range(0,261)}
+            # Aggiorna self._windows con le finestre campionate e sovra-campionate
+            self._windows.clear() # Clear existing windows to replace with oversampled ones
+            for i, window in enumerate(oversampled_windows):
+                self._windows[i] = window
+                #BPM_value[int(window['BPM']*260)] += 1
+                
+            # for i in range(0, 261):
+            #     print(f"{i} -> {BPM_value[i]}")
+                
+                
+            print(f"Total windows after oversampling: {len(self._windows)}")
+        
+            # #========================================================================#
+            # # CACOLO DEI PESI
+            # #========================================================================# 
+            # all_bpms = [self._windows[win_idx]['BPM'].item()*MITBIHDataset._MAX_BPM for win_idx in self._windows] # Assicurati che siano numeri Python standard
+
+
+            # min_bpm_val = MITBIHDataset._MIN_BPM
+            # max_bpm_val = MITBIHDataset._MAX_BPM
+            # bpm_bins_range = 5
+            
+            # num_bins = int((max_bpm_val - min_bpm_val)/bpm_bins_range)
+            # bins = np.linspace(min_bpm_val, max_bpm_val, num_bins + 1)
+            # bin_indices = np.digitize(all_bpms, bins)
+            
+            # # Conta le occorrenze in ogni bin
+            # # Non tutte i bin avranno campioni, quindi dobbiamo assicurarci di avere un conteggio per tutti i bin
+            # unique_bins, counts = np.unique(bin_indices, return_counts=True)
+            
+            # # Mappa i conteggi ai bin effettivi
+            # # Inizializza tutti i conteggi a 0
+            # full_counts = np.zeros(num_bins + 2) # +2 per i valori fuori dai bins (inf, -inf)
+            # for u_bin, count in zip(unique_bins, counts):
+            #     if 0 <= u_bin < len(full_counts): # Evita errori di indice per valori fuori range
+            #         full_counts[u_bin] = count
+            
+            # # Calcola i pesi inversamente proporzionali alla frequenza
+            # # Puoi filtrare i bin che non hanno conteggi validi se lo desideri
+            # # Ad esempio, considera solo i bin da 1 a num_bins (escludendo -inf e +inf)
+            # relevant_counts = full_counts[1:num_bins+1] # Assumendo che bin_indices 0 sia < bins[0] e l'ultimo sia >= bins[ultimo]
+
+            # # Pesi per ogni bin
+            # # Aggiungi un piccolo valore per evitare divisioni per zero
+            # # Puoi sperimentare diverse formule di weighting (es. 1/count, sqrt(1/count), log(1/count))
+            # weights_per_bin = 1.0 / (relevant_counts + 1e-6)
+
+            # # Normalizza i pesi, se vuoi che la loro somma sia 1
+            # #weights_per_bin = weights_per_bin / np.sum(weights_per_bin)
+            
+
+            
+            # self.bpm_bins = torch.tensor(bins/MITBIHDataset._MAX_BPM) # Salva i bordi dei bin
+            # self.bin_weights = torch.tensor(weights_per_bin, dtype=torch.float32) # Salva i pesi per i bin
+            # print(self.bpm_bins)
+            # print(self.bin_weights)
+            
+
           
         except Exception as e:
             print(f"Errore durante il caricamento dei dati per il record {current_record_name}: {e}")

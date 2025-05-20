@@ -8,11 +8,13 @@ import torch.nn as nn
 from torch.optim import lr_scheduler
 
 
+from NN_component.resNet import ResNet1D
 from dataset.dataset import DatasetMode, MITBIHDataset
 from dataset.datamodule import Mitbih_datamodule
 import os
 
-from model import Transformer_BPM_Regressor
+from NN_component.weightedMSELoss import WeightedMSELoss
+from NN_component.model import SimpleECGRegressor, Transformer_BPM_Regressor
 from setting import *
 import setting
 
@@ -33,7 +35,7 @@ def check_pytorch_cuda() -> bool:
 
 def trainModel(
     device: torch.device, 
-    datamodule: Mitbih_datamodule, 
+    dataModule: Mitbih_datamodule, 
     model: nn.Module, 
     num_epochs: int,
     start_lr: float = 1e-3,
@@ -51,17 +53,26 @@ def trainModel(
     
     start_epoch: int = 0
     best_val_loss = float('inf')
-
+    
     model.to(device)
+    train_dataloader = dataModule.train_dataloader()
+    val_dataloader = dataModule.val_dataloader()
+    # bins = dataModule.get_train_dataset().bpm_bins.to(device)
+    # weights = dataModule.get_train_dataset().bin_weights.to(device)
+    
+    #funzione di loss
+    #loss_function = WeightedMSELoss(bpm_bins=bins, weights=weights).to(device)
     loss_function = nn.MSELoss()
+    
+    #ottimizzatore
     optimizer = optim.Adam(model.parameters(), lr=start_lr)
     
-    # Inizializza lo scheduler
+    #Inizializza lo scheduler
     scheduler = lr_scheduler.ReduceLROnPlateau(
         optimizer,
         mode='min',         # Monitora una metrica da minimizzare (validation loss)
-        factor=0.1,         # Fattore di riduzione del learning rate (LR = LR * factor)
-        patience=2,         # Numero di epoche senza miglioramenti prima di ridurre il LR
+        factor=0.5,         # Fattore di riduzione del learning rate (LR = LR * factor)
+        patience=3,         # Numero di epoche senza miglioramenti prima di ridurre il LR
         threshold=0.0001,   # Soglia per considerare un "miglioramento"
         threshold_mode='rel' # La soglia è relativa al valore corrente
     )
@@ -74,14 +85,13 @@ def trainModel(
             checkpoint_data = torch.load(checkpoint, map_location=device)
             model.load_state_dict(checkpoint_data['model_state_dict'])
             optimizer.load_state_dict(checkpoint_data['optimizer_state_dict'])
-            scheduler.load_state_dict(checkpoint_data['scheduler_state_dict'])
+            #scheduler.load_state_dict(checkpoint_data['scheduler_state_dict'])
             #best_val_loss = checkpoint_data['loss']
             start_epoch = checkpoint_data['epoch'] + 1
             print(f"Riprendi l'addestramento dall'epoca {start_epoch} con validation loss {best_val_loss:.4f}")
 
 
-    train_dataloader = datamodule.train_dataloader()
-    val_dataloader = datamodule.val_dataloader()
+    
     
 
     with open(training_log_path, 'a') as log_file:
@@ -103,28 +113,41 @@ def trainModel(
             train_loop = tqdm(train_dataloader, leave=False, desc=f"Training Epoca {epoch+1}", )
             for batch_idx, (signal, bpm) in enumerate(train_loop):
                 
-        
+                #bpm = torch.nn.functional.one_hot(bpm, 261).view(12, 261).float()
                 signal = signal.to(device)
-                bpm = bpm.to(device)
-
+                bpm = bpm.float().squeeze(1).to(device) #da [12, 1] a [12]
+                
                 optimizer.zero_grad()
-                outputs = model(signal)
+                outputs = model(signal).squeeze(1) #da [12, 1] a [12]
+                
+                #print(bpm, outputs)
 
                 # print(f"bpm shape: {bpm.shape}")
                 # print(f"outputs shape: {outputs.shape}")
 
-                loss = loss_function(outputs, bpm) # MSE Loss
-                mae = torch.mean(torch.abs(outputs - bpm)) # MAE per il batch
+
+                # print(outputs)
+                # print(outputs.shape)
+                
+                # # print(bpm)
+                # print(bpm.shape)
+
+
+                loss = loss_function(outputs, bpm)
+                mae = torch.mean(torch.abs(outputs - bpm))
+    
 
                 loss.backward()
                 optimizer.step()
 
-                total_train_loss += loss.item() * signal.size(0) # Moltiplica per la batch size per avere la somma reale
-                total_train_mae += mae.item() * signal.size(0) # Accumula MAE pesato per batch size
-
-
+                # total_train_loss += loss.item() * signal.size(0) # Moltiplica per la batch size per avere la somma reale
+                # total_train_mae += mae.item() * signal.size(0) # Accumula MAE pesato per batch size
+                total_train_loss += loss.item()
+                total_train_mae += mae.item()
+                
                 # Aggiorna la descrizione di tqdm con la loss corrente
                 train_loop.set_description(f"Training Epoca {epoch+1} Loss: {loss.item():.4f}")
+
 
             # Calcola le metriche medie per l'epoca di training
             avg_train_loss = total_train_loss / len(train_dataloader.dataset) # Divisione per il numero totale di campioni
@@ -142,10 +165,13 @@ def trainModel(
             with torch.no_grad():
                 for batch_idx, (signal, bpm) in enumerate(val_loop):
                     
+                    #bpm = torch.nn.functional.one_hot(bpm, 261).view(12, 261).float()
                     signal = signal.to(device)
-                    bpm = bpm.to(device)
+                    bpm = bpm.long().squeeze(1).to(device)
                     
-                    outputs = model(signal)
+                    #print(bpm)
+                    
+                    outputs = model(signal).squeeze(1) #da [12, 1] a [12]
                     
                     # MSE Loss
                     loss = loss_function(outputs, bpm)
@@ -153,8 +179,10 @@ def trainModel(
                     # Calcola MAE per il batch
                     mae = torch.mean(torch.abs(outputs - bpm.float()))
                     
-                    total_val_loss += loss.item() * signal.size(0)
-                    total_val_mae += mae.item() * signal.size(0)
+                    total_val_loss += loss.item()
+                    total_val_mae += mae.item()
+                    # total_val_loss += loss.item() * signal.size(0) # Moltiplica per la batch size per avere la somma reale
+                    # total_val_mae += mae.item() * signal.size(0) # Accumula MAE pesato per batch size
                     
                     # Aggiorna la descrizione di tqdm con la loss corrente
                     val_loop.set_description(f"Validation Epoca {epoch+1} Loss: {loss.item():.4f}")
@@ -175,24 +203,27 @@ def trainModel(
             log_file.write(f"{epoch+1}, {scheduler.get_last_lr()}, {avg_train_loss:.6f}, {avg_train_mae:.6f}, {avg_train_rmse:.6f}, {avg_val_loss:.6f}, {avg_val_mae:.6f}, {avg_val_rmse:.6f}\n")
             log_file.flush() # Assicurati che i dati vengano scritti immediatamente sul disco
 
+            # log_file.write(f"{epoch+1}, {'-'}, {avg_train_loss:.6f}, {avg_train_mae:.6f}, {avg_train_rmse:.6f}, {avg_val_loss:.6f}, {avg_val_mae:.6f}, {avg_val_rmse:.6f}\n")
+            # log_file.flush() # Assicurati che i dati vengano scritti immediatamente sul disco
+
 
             # --- Gestione Checkpoint ---
             # Salva il modello migliore basato sulla validation loss
-            # if avg_val_loss < best_val_loss:
-            #     best_val_loss = avg_val_loss
+            if avg_val_loss < best_val_loss:
+                best_val_loss = avg_val_loss
 
-            # Definisci il percorso del file di checkpoint (salviamo solo il migliore)
-            # Potresti volerne tenere di più o nominarli diversamente
-            checkpoint_path = os.path.join(checkpoint_dir, f"Epoch[{epoch+1}]_Loss[{avg_val_loss:.4f}].pth")
+                # Definisci il percorso del file di checkpoint (salviamo solo il migliore)
+                # Potresti volerne tenere di più o nominarli diversamente
+                checkpoint_path = os.path.join(checkpoint_dir, f"Epoch[{epoch+1}]_Loss[{avg_val_loss:.4f}].pth")
 
-            print(f"Validation loss migliorata ({avg_val_loss:.4f}). Salvataggio modello in {checkpoint_path}")
-            torch.save({
-                'epoch': epoch,
-                'model_state_dict': model.state_dict(),
-                'optimizer_state_dict': optimizer.state_dict(),
-                'scheduler_state_dict': scheduler.state_dict(), 
-                'loss': avg_val_loss, # Salva il miglior loss raggiunto
-            }, checkpoint_path) # Salva nel file specificato
+                print(f"Validation loss migliorata ({avg_val_loss:.4f}). Salvataggio modello in {checkpoint_path}")
+                torch.save({
+                    'epoch': epoch,
+                    'model_state_dict': model.state_dict(),
+                    'optimizer_state_dict': optimizer.state_dict(),
+                    'scheduler_state_dict': scheduler.state_dict(), 
+                    'loss': avg_val_loss, # Salva il miglior loss raggiunto
+                }, checkpoint_path) # Salva nel file specificato
 
 
 
@@ -241,12 +272,13 @@ def test_model(
             # Forward pass
             outputs = model(signal)
             
+            
 
             # Calcola la loss del batch (per l'accumulo)
-            loss = loss_function(outputs, bpm)
+            #loss = loss_function(outputs, bpm)
             
             for i in range(batch_size):
-                print(f"Target: {bpm[i]} Predected: {outputs[i]} Loss: {loss}")
+                print(f"Target: {bpm[i]} Predected: {outputs[i]} Loss: -")
 
             print()
 
@@ -255,7 +287,7 @@ def test_model(
 
             # Accumula le metriche, pesate per la dimensione del batch corrente
             batch_size = signal.size(0)
-            total_test_loss += loss.item() * batch_size
+            #total_test_loss += loss.item() * batch_size
             total_test_mae += mae.item() * batch_size
             num_samples += batch_size
 
@@ -334,26 +366,40 @@ def main():
     dataModule = Mitbih_datamodule(
         args.dataset_path, 
         sample_rate=sample_rate, 
-        window_size_t=5,#args.window_size,
+        window_size_t=10,#args.window_size,
         window_stride_t=5,#args.window_stride,
         num_workers=4,
         batch_size=12
     )
     
-    #print(dataModule.train_dataset()[2])
+    
+    #dataModule.print_all_training_ecg_signals(os.path.join(setting.DATA_FOLDER_PATH, 'training_plots'))
+    #dataModule.print_training_plot_bpm_distribution(os.path.join(setting.DATA_FOLDER_PATH, 'training_plots'))
+    #dataModule.print_validation_plot_bpm_distribution(os.path.join(setting.DATA_FOLDER_PATH, 'validation_plots'))
+    
+    #dataModule.print_training_record('207',os.path.join(setting.DATA_FOLDER_PATH, 'test_plot'))
     
     
-    model = Transformer_BPM_Regressor(
-        input_samples_num=args.window_size*sample_rate,
-        in_channels=2,
-        conv_kernel_size=100,
-        conv_stride=100,
-        d_model=args.d_model,
-        head_num=8,
-        num_encoder_layers=10,
-        dim_feedforward=args.dff,
-        dropout=args.dropout_rate,
-    )
+   
+    model = ResNet1D(in_channels_signal=2, output_dim=1)
+
+    
+    # model = Transformer_BPM_Regressor(
+    #     input_samples_num=args.window_size*sample_rate,
+    #     in_channels=2,
+    #     conv_kernel_size=200,
+    #     conv_stride=200,
+    #     d_model=args.d_model,
+    #     head_num=8,
+    #     num_encoder_layers=8,
+    #     dim_feedforward=args.dff,
+    #     dropout=args.dropout_rate,
+    # )
+    
+    # model = SimpleECGRegressor(
+    #     in_channels=2,
+    #     input_length=args.window_size*sample_rate
+    # )
     
     print("Architettura del Modello:")
     print(model)
@@ -365,9 +411,9 @@ def main():
 
     # trainModel(
     #     device = device,
-    #     datamodule = dataModule,
+    #     dataModule = dataModule,
     #     model = model,
-    #     num_epochs = 15,
+    #     num_epochs = 40,
     #     training_log_path=os.path.join(setting.LOGS_FOLDER, 'training_logs.txt'),
     #     checkpoint_dir = setting.OUTPUT_PATH,
     #     #checkpoint = "/app/Data/Models/Epoch[1]_Loss[inf].pth"
@@ -377,15 +423,11 @@ def main():
         device = device,
         datamodule = dataModule,
         model = model,
-        checkpoint = "/app/Data/Models/Epoch[12]_Loss[334.8916].pth"
+        checkpoint = "/app/Data/Models/Epoch[8]_Loss[2.2832].pth"
     )
     
-    #dataModule.print_all_training_ecg_signals(os.path.join(setting.DATA_FOLDER_PATH, 'training_plots'))
-    #dataModule.print_training_plot_bpm_distribution(os.path.join(setting.DATA_FOLDER_PATH, 'training_plots'))
-    #dataModule.print_training_record('207',os.path.join(setting.DATA_FOLDER_PATH, 'test_plot'))
-    
+   
 
 if __name__ == "__main__":
     main()
-    
     

@@ -58,9 +58,14 @@ class Mitbih_datamodule(pl.LightningDataModule):
     def print_training_record(self, record_name: str, output_folder: str) -> None:
         self._TRAINING_DATASET.plot_all_windows_for_record(record_name, output_folder)
             
+    def print_validation_plot_bpm_distribution(self, output_folder: str) -> None:
+        os.makedirs(output_folder, exist_ok=True)
+        self._VALIDATION_DATASET.plot_bpm_distribution(output_folder)
+      
     def print_training_plot_bpm_distribution(self, output_folder: str) -> None:
         os.makedirs(output_folder, exist_ok=True)
         self._TRAINING_DATASET.plot_bpm_distribution(output_folder)
+      
         
     def train_dataloader(self) -> DataLoader:
         return DataLoader(self._TRAINING_DATASET, batch_size=self._batch_size, num_workers=self._num_workers, shuffle=True, pin_memory=self._pin_memory, persistent_workers=self._persistent_workers, drop_last=True, prefetch_factor=self._prefetch_factor)
@@ -71,5 +76,12 @@ class Mitbih_datamodule(pl.LightningDataModule):
     def test_dataloader(self) -> DataLoader:
         return DataLoader(self._TEST_DATASET, batch_size=self._batch_size, num_workers=self._num_workers, shuffle=True, pin_memory=self._pin_memory, persistent_workers=self._persistent_workers, drop_last=True, prefetch_factor=self._prefetch_factor)
     
-    def train_dataset(self) :
+    
+    def get_train_dataset(self) :
         return self._TRAINING_DATASET
+    
+    def get_val_dataset(self) :
+        return self._VALIDATION_DATASET
+    
+    def get_test_dataset(self) :
+        return self._TEST_DATASET

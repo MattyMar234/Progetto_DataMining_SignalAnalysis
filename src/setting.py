@@ -18,7 +18,7 @@ if not os.path.exists(OUTPUT_PATH):
 
 #============================= Model =============================#
 NUM_LAYERS: Final[int] = 4
-D_MODEL: Final[int] = 512
+D_MODEL: Final[int] = 512*2
 NUM_HEADS: Final[int] = 8
 DFF: Final[int] = D_MODEL*4
 DROPOUT_RATE: Final[float] = 0.1
