@@ -346,7 +346,7 @@ def main():
     
     # Imposta i parametri del dataset
     dataset_path = args.dataset_path
-    MITBIHDataset.setDatasetPath(dataset_path)
+    MITBIHDataset.initDataset(dataset_path)
     
     # Calcola i parametri del dataset in base alla frequenza di campionamento
     sample_rate = 360

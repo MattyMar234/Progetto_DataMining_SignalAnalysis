@@ -39,7 +39,7 @@ class Mitbih_datamodule(pl.LightningDataModule):
             self._pin_memory = False
             self._prefetch_factor = None
             
-        MITBIHDataset.setDatasetPath(datasetFolder)
+        MITBIHDataset.initDataset(datasetFolder)
         MITBIHDataset.init_dataset()
         
         sample_per_window = sample_rate * window_size_t
