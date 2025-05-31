@@ -9,7 +9,7 @@ from torch.optim import lr_scheduler
 
 
 from NN_component.resNet import ResNet1D
-from dataset.dataset import DatasetMode, MITBIHDataset
+from dataset.dataset import DatasetDataMode, DatasetMode, MITBIHDataset
 from dataset.datamodule import Mitbih_datamodule
 import os
 
@@ -344,9 +344,8 @@ def main():
     parser.add_argument("--window_stride", type=int, default=WINDOW_STRIDE, help=f"Stride della finestra del segnale in secondi (default: {WINDOW_STRIDE})")
     args = parser.parse_args()
     
-    # Imposta i parametri del dataset
-    dataset_path = args.dataset_path
-    MITBIHDataset.initDataset(dataset_path)
+
+    
     
     # Calcola i parametri del dataset in base alla frequenza di campionamento
     sample_rate = 360
@@ -365,12 +364,20 @@ def main():
     
     dataModule = Mitbih_datamodule(
         args.dataset_path, 
+        datasetDataMode=DatasetDataMode.BEAT_CLASSIFICATION,
         sample_rate=sample_rate, 
-        window_size_t=10,#args.window_size,
-        window_stride_t=5,#args.window_stride,
+        sample_per_window=40,#args.window_size,
         num_workers=4,
         batch_size=12
     )
+    
+    dataset = dataModule.get_train_dataset()
+    
+    print(dataset.get(0))
+    print(dataset[0])
+    
+    
+    return
     
     
     #dataModule.print_all_training_ecg_signals(os.path.join(setting.DATA_FOLDER_PATH, 'training_plots'))

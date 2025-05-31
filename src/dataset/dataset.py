@@ -60,17 +60,7 @@ class SampleType(Enum):
     START_SEG_PLUS = "+"
     COMMENT = "\""
     
-    # ---- BEAT TO NUMBER MAP ---- #
-    __beat_to_number_map = {
-
-        NORMAL_N: 0, NORMAL_L: 0, NORMAL_R: 0, NORMAL_B: 0, NORMAL_LINE: 0,
-        SVEB_A: 1, SVEB_a: 1, SVEB_J: 1, SVEB_j: 1, SVEB_S: 1,
-        VEB_V: 2, VEB_E: 2, VEB_e: 2,
-        FUSION_F: 3, FUSION_f: 3,
-        VENTRICULAR_FLUTTER_WAVE: 4, 
-        PACED_BEAT: 5,
-        UNKNOWN_BEAT_Q: 6, 
-    }
+    
     
     @classmethod
     def to_Label(cls, type: str) -> 'SampleType':
@@ -103,9 +93,32 @@ class SampleType(Enum):
         
     @classmethod
     def mapBeatToNumber(cls, beat: 'SampleType') -> int:
-        if beat not in cls.__beat_to_number_map:
-            raise ValueError(f"Il beat {beat} non ha una mappatura numerica definita.")
-        return cls.__beat_to_number_map[beat]
+        
+        match beat:
+            case SampleType.NORMAL_N | SampleType.NORMAL_L | SampleType.NORMAL_R | SampleType.NORMAL_B | SampleType.NORMAL_LINE:
+                return 0
+        
+            case SampleType.SVEB_A | SampleType.SVEB_a | SampleType.SVEB_J | SampleType.SVEB_j | SampleType.SVEB_S:
+                return 1
+            
+            case SampleType.VEB_V | SampleType.VEB_E | SampleType.VEB_e:  
+                return 2
+            
+            case SampleType.FUSION_F | SampleType.FUSION_f :
+                return 3
+            
+            case SampleType.VENTRICULAR_FLUTTER_WAVE:
+                return 4
+            
+            case SampleType.PACED_BEAT:
+                return 5
+
+            case SampleType.UNKNOWN_BEAT_Q:
+                return 6
+            
+            case _ :
+                raise ValueError(f"Il beat {beat} non ha una mappatura numerica definita.")
+      
     
   
 class MITBIHDataset(Dataset):
@@ -132,7 +145,9 @@ class MITBIHDataset(Dataset):
     _RECORDS_MLII_V4 = ['124']
     _RECORDS_MLII_V5 = ['100','114','123']
     
+    # lista dei record da utilizzare
     ALL_RECORDS: Final[list] = _RECORDS_MLII_V1
+    
     TRAINING_RECORDS: list = []
     VALIDATION_RECORDS: list = []
     TEST_RECORDS: list = []
@@ -145,17 +160,26 @@ class MITBIHDataset(Dataset):
     _MAX_BPM=260
     _MIN_BPM=0
     
+    __SAMPLE_RATE: int | None = None
+    __RANDOM_SEED: int | None = None
     
-    def __new__(cls, *args, **kwargs):
-        return super(MITBIHDataset, cls).__new__(cls)
-
+    # Dizionario per memorizzare il segnale di ogni record
+    _ALL_SIGNALS_DICT: Dict[str, torch.Tensor] = {}
+    
+    # Dizionario per memorizzare le annotazioni di ogni segnale
+    _ALL_SIGNALS_BEAT_ANNOTATIONS_DICT: Dict[str, List[Dict[str, Any]]] = {}
+    _ALL_SIGNALS_TAG_ANNOTATIONS_DICT: Dict[str, List[Dict[str, Any]]] = {}
+    
 
     @classmethod
     def resetDataset(cls) -> None:
-        pass
+        cls._DATASET_PATH = None
+        cls._FILES_CHEKED = False
+        cls._ALL_SIGNALS_DICT.clear()
+        cls._ALL_SIGNALS_BEAT_ANNOTATIONS_DICT.clear()
 
     @classmethod
-    def initDataset(cls, path: str):
+    def initDataset(cls, path: str, sample_rate: int = 360, *, fill_and_concat_missing_channels: bool = False, random_seed: int = 42):
         """
         Imposta il percorso del dataset e carica staticamente tutti i dati.
         Questo metodo dovrebbe essere chiamato una volta all'inizio del programma.
@@ -164,166 +188,65 @@ class MITBIHDataset(Dataset):
             print(f"Il percorso del dataset è già impostato su: {cls._DATASET_PATH}")
             return
         
-        cls._DATASET_PATH = path
-        cls._FILES_CHEKED = False
+        cls.__SAMPLE_RATE = sample_rate
+        cls.__RANDOM_SEED = random_seed
         
+        #========================================================================#
+        # VERIFICO I FILES
+        #========================================================================#
+        cls._DATASET_PATH = path
+
         if not os.path.isdir(path):
             raise FileNotFoundError(f"La directory specificata non esiste: {path}")
         print(f"Percorso del dataset impostato su: {cls._DATASET_PATH}")
         
-        min_list = []
-        max_list = []
- 
-        # Controlla se i file CSV e TXT esistono
+        print("Verifica dei files... ", end=None)
         for record_name in cls.ALL_RECORDS:
-            csv_filepath = os.path.join(path, f"{record_name}.csv")
-            txt_filepath = os.path.join(path, f"{record_name}annotations.txt")
-
-            if not os.path.exists(csv_filepath):
-                raise FileNotFoundError(f"File CSV non trovato: {csv_filepath}")
-            if not os.path.exists(txt_filepath):
-                raise FileNotFoundError(f"File TXT non trovato: {txt_filepath}")
-
-   
-            current_record_name = record_name
             csv_filepath = os.path.join(MITBIHDataset._DATASET_PATH, f"{record_name}.csv")
-            #txt_filepath = os.path.join(MITBIHDataset._DATASET_PATH, f"{record_name}annotations.txt")
-
-    
-            # --- Leggi il segnale dal file CSV ---
-            # Si aspetta colonne: 'sample #','MLII','V5'
-            df = pd.read_csv(csv_filepath)
-            
-            for idx, col in enumerate(df.columns):
-                df = df.rename(columns={df.columns[idx]: df.columns[idx].replace('\'', '')}) # Rinomina la prima colonna in 'sample #'
-
-            signal: torch.Tensor | None = None
-            
-            if MITBIHDataset._MLII_COL in df.columns:
-                signal = torch.from_numpy(df[MITBIHDataset._MLII_COL].values).unsqueeze(0)
-            
-            if MITBIHDataset._V1_COL in df.columns:
-                if signal is None:
-                    signal = torch.from_numpy(df[MITBIHDataset._V1_COL].values).unsqueeze(0)
-                else:
-                    signal = torch.cat((signal, torch.from_numpy(df[MITBIHDataset._V1_COL].values).unsqueeze(0)), dim=0)
-            
-            if MITBIHDataset._V2_COL in df.columns:
-                if signal is None:
-                    signal = torch.from_numpy(df[MITBIHDataset._V2_COL].values).unsqueeze(0)
-                else:
-                    signal = torch.cat((signal, torch.from_numpy(df[MITBIHDataset._V2_COL].values).unsqueeze(0)), dim=0)
+            txt_filepath = os.path.join(MITBIHDataset._DATASET_PATH, f"{record_name}annotations.txt")
+            assert os.path.exists(csv_filepath), f"file {csv_filepath} non trovato" 
+            assert os.path.exists(txt_filepath), f"file {txt_filepath} non trovato" 
         
-            # if MITBIHDataset._V3_COL in df.columns:
-            #     if signal is None:
-            #         signal = torch.from_numpy(df[MITBIHDataset._V3_COL].values).unsqueeze(0)
-            #     else:
-            #         signal = torch.cat((signal, torch.from_numpy(df[MITBIHDataset._V3_COL].values).unsqueeze(0)), dim=0)
-            
-            if MITBIHDataset._V4_COL in df.columns:
-                if signal is None:
-                    signal = torch.from_numpy(df[MITBIHDataset._V4_COL].values).unsqueeze(0)
-                else:
-                    signal = torch.cat((signal, torch.from_numpy(df[MITBIHDataset._V4_COL].values).unsqueeze(0)), dim=0)
-            
-            if MITBIHDataset._V5_COL in df.columns:
-                if signal is None:
-                    signal = torch.from_numpy(df[MITBIHDataset._V5_COL].values).unsqueeze(0)
-                else:
-                    signal = torch.cat((signal, torch.from_numpy(df[MITBIHDataset._V5_COL].values).unsqueeze(0)), dim=0)
-            
-        
-
-            # Normalizza il segnale
-            signal = signal.float() 
-            max_value = torch.max(signal).item()
-            min_value = torch.min(signal).item()
-
-            max_list.append(max_value)
-            min_list.append(min_value)
-
-        cls._MAX_VALUE = max(max_list)
-        cls._MIN_VALUE = min(min_list)
-        print(f"Valore massimo trovato: {cls._MAX_VALUE}")
-        print(f"Valore minimo trovato: {cls._MIN_VALUE}")
+        print("Ok")
         
         cls._FILES_CHEKED = True
         
+        #========================================================================#
+        # CARICO I DATI
+        #========================================================================#
+        print("caricamneto dei dati... ", end=None)
+        cls.__load_signals(fill_and_concat_missing_channels=fill_and_concat_missing_channels)
+        print("Ok")
+        
+        #========================================================================#
+        # NORMALIZZAZIONE DEI DATI
+        #========================================================================#
+        print("Normalizzazione dei dati... ", end=None)
+        min_list = []
+        max_list = []
+        
+        #cerco i massimi e i minimi di ogni segnale
+        for record_name in cls.ALL_RECORDS:
+            signal = cls._ALL_SIGNALS_DICT[record_name]
+            max_list.append(torch.max(signal).item())
+            min_list.append(torch.min(signal).item())
+ 
+        #cerco il massimo e il minimo assoluto
+        cls._MAX_VALUE = max(max_list)
+        cls._MIN_VALUE = min(min_list)
+        
+        
+        #normalizzo tutti i segnali
+        for record_name in cls.ALL_RECORDS:
+            signal = cls._ALL_SIGNALS_DICT[record_name]
+            signal = (signal - MITBIHDataset._MIN_VALUE) / (MITBIHDataset._MAX_VALUE - MITBIHDataset._MIN_VALUE) 
+            cls._ALL_SIGNALS_DICT[record_name] = signal
+        print("Ok")
+        print(f"Valore massimo trovato: {cls._MAX_VALUE}")
+        print(f"Valore minimo trovato: {cls._MIN_VALUE}")
         
     @classmethod
-    def init_dataset(cls) -> None:
-        assert cls._FILES_CHEKED, "files del dataset non verificati"
-        
-        train_ratio = 0.8
-        val_ratio = 0.1
-        test_ratio = 0.1
-        
-        train_indices, temp_indices = train_test_split(cls.ALL_RECORDS, test_size=(val_ratio + test_ratio), random_state=42)
-        val_indices, test_indices = train_test_split(temp_indices, test_size=(test_ratio / (val_ratio + test_ratio)), random_state=42)
-
-        cls.TRAINING_RECORDS = train_indices
-        cls.VALIDATION_RECORDS = val_indices
-        cls.TEST_RECORDS = test_indices
-        
-        
-    
-    def __init__(self, *, mode: DatasetMode, dataMode: DatasetDataMode, sample_rate: int = 360, sample_per_window: int = 360, sample_per_stride: int = 180):
-        assert MITBIHDataset._DATASET_PATH, "Il percorso del dataset non è stato impostato. Usa 'setDatasetPath' per impostarlo."
-        assert MITBIHDataset._FILES_CHEKED, "files del dataset non verificati"
-        
-   
-        self._mode: DatasetMode = mode
-        self._dataMode: DatasetDataMode = dataMode
-        
-        self._sample_rate: int = sample_rate
-        self._samples_per_window: int = sample_per_window
-        self._samples_per_side:int = sample_per_stride
-        
-        # lista dei record da utilizzare
-        self._record_list: list | None = None               
-        
-        # Dizionario per memorizzare il segnale di ogni record
-        self._signals_dict: Dict[str, torch.Tensor] = {}
-        
-        # Dizionario per memorizzare le annotazioni di ogni segnale
-        self._signals_annotations_dict: Dict[str, List[Dict[str, any]]] = {}
-        
-        #dizionario delle finestre di dati     
-        self._windows: Dict[int, Dict[str, any]] = {}       
-        self._record_windows: Dict[str, Dict[int, Dict[str, any]]] = {}
-        self._BPM_toWindows: Dict[int, list] = {}
-        
-        
-        match self._mode:
-            case DatasetMode.TRAINING:
-                self._record_list = MITBIHDataset.TRAINING_RECORDS
-       
-            case DatasetMode.VALIDATION:
-                self._record_list = MITBIHDataset.VALIDATION_RECORDS
-            
-            case DatasetMode.TEST:
-                self._record_list = MITBIHDataset.TEST_RECORDS
-            
-            case _ :
-                raise ValueError(f"Modalità non valida: {self._mode}")
-        
-        print(f"Caricamento dati per la modalità {self._mode.name} dai record: {self._record_list}")
-        
-        self._load_signals()
-        
-        match self._dataMode:
-            case DatasetDataMode.BPM_REGRESSION: 
-                self._load_data_for_BPM_regression()
-                
-            case DatasetDataMode.BEAT_CLASSIFICATION: 
-                self._load_data_for_Beat_classification()
-                
-            case _ :
-                raise ValueError(f"Modalità per i dati non valida: {self._dataMode}")
-        
-        
-
-    def _load_signals(self, fill_and_concat_missing_channels: bool = False) -> None:
+    def __load_signals(cls, fill_and_concat_missing_channels: bool = False) -> None:
         
         colums_list: list = [
             MITBIHDataset._MLII_COL,
@@ -334,63 +257,150 @@ class MITBIHDataset(Dataset):
             MITBIHDataset._V5_COL
         ]
         
-        for record_name in self._record_list:
-            csv_filepath = os.path.join(MITBIHDataset._DATASET_PATH, f"{record_name}.csv")
-            txt_filepath = os.path.join(MITBIHDataset._DATASET_PATH, f"{record_name}annotations.txt")
-            signal: torch.Tensor | None = None
-            
-            #========================================================================#
-            # ESTRAGGO IL SEGNALE
-            #========================================================================#
-            # --- Leggi il segnale dal file CSV ---
-            df = pd.read_csv(csv_filepath)
-            
-            for idx, col in enumerate(df.columns):
-                df = df.rename(columns={df.columns[idx]: df.columns[idx].replace('\'', '')})
-
-            for col in colums_list:
-                if col in df.columns:
-                    data = torch.from_numpy(df[col].values).unsqueeze(0)
-                elif fill_and_concat_missing_channels:
-                    data = torch.zeros(MITBIHDataset._MAX_SAMPLE_NUM).unsqueeze(0)
-            
-                if signal is None:
-                    signal = data
-                else:
-                    signal = torch.cat(data, dim=0)
+        progress_bar = tqdm(total=len(cls.ALL_RECORDS), desc="Caricamento Records")
+        
+        try:    
+            for record_name in cls.ALL_RECORDS:
+                #progress_bar.display(record_name)
+                csv_filepath = os.path.join(MITBIHDataset._DATASET_PATH, f"{record_name}.csv")
+                txt_filepath = os.path.join(MITBIHDataset._DATASET_PATH, f"{record_name}annotations.txt")
+                signal: torch.Tensor | None = None
+        
                 
-            # Normalizza il segnale
-            signal = signal.float() 
-            signal = (signal - MITBIHDataset._MIN_VALUE) / (MITBIHDataset._MAX_VALUE - MITBIHDataset._MIN_VALUE) 
-            
-            # Salva il segnale per il record corrente
-            self._signals_dict[record_name] = signal 
-            
-            #========================================================================#
-            # ESTRAGGO LE ANNOTAZIONI
-            #========================================================================#
-            with open(txt_filepath, 'r') as f:
-                f.readline() # Salta la prima riga (header)
+                #========================================================================#
+                # ESTRAGGO IL SEGNALE
+                #========================================================================#
+                # --- Leggi il segnale dal file CSV ---
+                df = pd.read_csv(csv_filepath)
                 
-                dataDict_List: List[Dict[str, any]] = []
+                for idx, col in enumerate(df.columns):
+                    df = df.rename(columns={df.columns[idx]: df.columns[idx].replace('\'', '')})
+
+                for col in colums_list:
+                    if col in df.columns:
+                        data = torch.from_numpy(df[col].values).unsqueeze(0)
+                    elif fill_and_concat_missing_channels:
+                        data = torch.zeros(MITBIHDataset._MAX_SAMPLE_NUM).unsqueeze(0)
                 
-                for line in f:
-                    line = line.strip()  # Rimuovi spazi bianchi
-                    parts = line.split() # Dividi la riga in base agli spazi e ignore le stringe vuote
-
-                    # Una riga di annotazione valida dovrebbe avere almeno 3 parti (Time, Sample #, Type)
-                    if len(parts) < 3:
-                        raise ValueError(f"Riga di annotazione non valida: {line}.")
-
-                    dataDict_List.append({
-                        "annotation" : SampleType.to_Label(parts[2]),   #tipologia di sample
-                        "sample_pos" : int(parts[1]),                   # Indice del campione
-                        "time" : self._formatTime(parts[0])             # Tempo in secondi
-                    })
+                    if signal is None:
+                        signal = data
+                    else:
+                        signal = torch.cat((signal, data), dim=0)
                     
-            # Salva le annotazioni per il record corrente
-            self._signals_annotations_dict[record_name] = dataDict_List 
+                # # Normalizza il segnale
+                # signal = signal.float() 
+                # signal = (signal - MITBIHDataset._MIN_VALUE) / (MITBIHDataset._MAX_VALUE - MITBIHDataset._MIN_VALUE) 
+                
+                
+                # Salva il segnale per il record corrente
+                cls._ALL_SIGNALS_DICT[record_name] = signal.float() 
+                
+                #========================================================================#
+                # ESTRAGGO LE ANNOTAZIONI
+                #========================================================================#
+                with open(txt_filepath, 'r') as f:
+                    f.readline() # Salta la prima riga (header)
+                    
+                    beat_dataDict_List: List[Dict[str, any]] = []
+                    tag_dataDict_List: List[Dict[str, any]] = []
+                    
+                    for line in f:
+                        line = line.strip()  # Rimuovi spazi bianchi
+                        parts = line.split() # Dividi la riga in base agli spazi e ignore le stringe vuote
 
+                        # Una riga di annotazione valida dovrebbe avere almeno 3 parti (Time, Sample #, Type)
+                        if len(parts) < 3:
+                            raise ValueError(f"Riga di annotazione non valida: {line}.")
+
+                        annotationType = SampleType.to_Label(parts[2])
+
+                        if SampleType.isBeat(annotationType):
+                            beat_dataDict_List.append({
+                                "annotation" : annotationType,          #tipologia di sample
+                                "sample_pos" : int(parts[1]),           # Indice del campione
+                                "time" : cls._formatTime(parts[0])      # Tempo in secondi
+                            })
+                        elif SampleType.isTag(annotationType):
+                            tag_dataDict_List.append({
+                                "annotation" : annotationType,          #tipologia di sample
+                                "sample_pos" : int(parts[1]),           # Indice del campione
+                                "time" : cls._formatTime(parts[0])      # Tempo in secondi
+                            })
+                            
+                                            
+                # Salva le annotazioni per il record corrente
+                cls._ALL_SIGNALS_BEAT_ANNOTATIONS_DICT[record_name] = beat_dataDict_List 
+                cls._ALL_SIGNALS_TAG_ANNOTATIONS_DICT[record_name] = tag_dataDict_List
+                progress_bar.update(1)
+        finally:
+            progress_bar.close()
+
+    def __new__(cls, *args, **kwargs):
+        return super(MITBIHDataset, cls).__new__(cls)  
+        
+    
+    def __init__(
+            self, 
+            *,
+            sample_per_window: int | None = None, 
+            sample_per_stride: int | None = None, 
+            mode: DatasetMode | None = None, 
+            dataMode: DatasetDataMode | None = None, 
+        ):
+        assert MITBIHDataset._DATASET_PATH, "Il percorso del dataset non è stato impostato. Usa 'setDatasetPath' per impostarlo."
+        assert MITBIHDataset._FILES_CHEKED, "files del dataset non verificati"
+        
+   
+        self._mode: DatasetMode = mode
+        self._dataMode: DatasetDataMode = dataMode
+        
+        self._samples_per_window: int = sample_per_window
+        self._samples_per_side:int = sample_per_stride
+        
+  
+        #dizionario delle finestre di dati     
+        self._windows: Dict[int, Dict[str, any]] = {} 
+        self._class_weights: torch.Tensor | None = None      
+        self._record_windows: Dict[str, Dict[int, Dict[str, any]]] = {}
+        self._BPM_toWindows: Dict[int, list] = {}
+        
+        train_ratio = 0.8
+        val_ratio = 0.1
+        test_ratio = 0.1
+        
+        print(f"Caricamento valori per {self._mode} in modalità {self._dataMode}")
+        match self._dataMode:
+            case DatasetDataMode.BPM_REGRESSION: 
+                self._load_data_for_BPM_regression()
+                
+            case DatasetDataMode.BEAT_CLASSIFICATION: 
+                total_beat_number = sum([len(MITBIHDataset._ALL_SIGNALS_BEAT_ANNOTATIONS_DICT[key]) for key in MITBIHDataset._ALL_SIGNALS_BEAT_ANNOTATIONS_DICT.keys()])
+                index_list = range(0, total_beat_number)
+
+                train_indices, temp_indices = train_test_split(index_list, test_size=(val_ratio + test_ratio), random_state=MITBIHDataset.__RANDOM_SEED)
+                val_indices, test_indices = train_test_split(temp_indices, test_size=(test_ratio / (val_ratio + test_ratio)), random_state=MITBIHDataset.__RANDOM_SEED)
+
+                print(f"train_indices: {len(train_indices)}")
+                print(f"val_indices: {len(val_indices)}")
+                print(f"test_indices: {len(test_indices)}")
+
+                match self._mode:
+                    case DatasetMode.TRAINING:
+                        self.__load_data_for_Beat_classification(train_indices)
+            
+                    case DatasetMode.VALIDATION:
+                        self.__load_data_for_Beat_classification(val_indices)
+                    
+                    case DatasetMode.TEST:
+                        self.__load_data_for_Beat_classification(test_indices)
+            
+                    case _ :
+                        raise ValueError(f"Modalità non valida: {self._mode}") 
+            case _ :
+                raise ValueError(f"Modalità per i dati non valida: {self._dataMode}")
+        
+        
+    
     def _load_data_for_BPM_regression(self):
         """Carica i dati dai record selezionati (CSV per segnale, TXT per annotazioni)."""
         
@@ -675,34 +685,91 @@ class MITBIHDataset(Dataset):
             raise e
             
     
-    def _load_data_for_Beat_classification(self):
+
+    def __load_data_for_Beat_classification(self, indices: List[int]):
+        indices = sorted(indices)
         
+        idx: int = 0
+        counter: int = 0
         window_counter: int = 0
         
-        for record_name in self._record_list:
-            annotations = self._signals_annotations_dict[record_name]
-            
-            for annotation in annotations:
-                beat_type = annotation["annotationotation"]
-                sample_pos = annotation["sample_pos"]
-                time = annotation["time"]
+        progress_bar = tqdm(total=len(indices))
+        
+        try:
+            for record_name in MITBIHDataset.ALL_RECORDS:
+                signal = MITBIHDataset._ALL_SIGNALS_DICT[record_name]
+                annotations = MITBIHDataset._ALL_SIGNALS_BEAT_ANNOTATIONS_DICT[record_name]
                 
-                #Verifico il tipo di annotazione
-                if not SampleType.isBeat(beat_type):
-                    continue
-                
-                start = sample_pos - int(self._samples_per_window / 2)
-                end = sample_pos + int(self._samples_per_window / 2)
-                
-                self._windows[window_counter] = {
-                    "signal_fragment" : self._signals_dict[record_name][:, start:end],
-                    "beatType": beat_type
-                }
-                window_counter += 1
-                
+                for annotation in annotations:
+                    
+                    #se ho preso tutti gli elementi
+                    if idx >= len(indices):
+                        return
+                    
+                    #se non ho ancora raggiugnto l'indice dell'elemento da utilizzare
+                    elif indices[idx] > counter:
+                        counter += 1
+                        continue
+                    
+                    #se h oraggiugnto l'indice dell'elemeneto da utilizzare
+                    elif indices[idx] == counter:
+                        progress_bar.update(1)
+                        counter += 1
+                        idx+=1
+                        
+                    
+                    
+                    beat_type = annotation["annotation"]
+                    sample_pos = annotation["sample_pos"]
+                    #time = annotation["time"]
+                    
+                    #Verifico il tipo di annotazione
+                    if not SampleType.isBeat(beat_type):
+                        continue
+                    
+                    start = sample_pos - int(self._samples_per_window / 2)
+                    end = sample_pos + int(self._samples_per_window / 2)
 
-           
-    def _formatTime(self, time: str) -> float:        
+                    # Handle boundary conditions for window extraction
+                    if start < 0:
+                        padding_left = -start
+                        start = 0
+                        end = self._samples_per_window # Window size is fixed
+                    elif end > signal.shape[1]:
+                        padding_right = end - signal.shape[1]
+                        end = signal.shape[1]
+                        start = end - self._samples_per_window # Window size is fixed
+                    else:
+                        padding_left = 0
+                        padding_right = 0
+                    
+                    # Ensure start is not negative after boundary adjustments
+                    start = max(0, start)
+                    
+                    # Extract and pad signal fragment
+                    signal_fragment = signal[:, start:end]
+                    
+                    # Apply padding if necessary
+                    current_window_len = signal_fragment.shape[1]
+                    if current_window_len < self._samples_per_window:
+                        # Add padding to the right to reach desired window length
+                        padding_needed = self._samples_per_window - current_window_len
+                        signal_fragment = torch.nn.functional.pad(signal_fragment, (0, padding_needed))
+                    elif current_window_len > self._samples_per_window:
+                        # If for some reason it's too long, trim it
+                        signal_fragment = signal_fragment[:, :self._samples_per_window]
+                    
+                    self._windows[window_counter] = {
+                        'signal_fragment' : signal_fragment,
+                        'beatType': beat_type,
+                        'record_name': record_name,
+                    }
+                    window_counter += 1
+        finally:
+            progress_bar.close()       
+
+    @classmethod    
+    def _formatTime(cls, time: str) -> float:        
         parts = time.split(':')
         split = parts[-1].split('.')
         milliseconds = int(split[1])
@@ -722,29 +789,25 @@ class MITBIHDataset(Dataset):
         return len(self._windows.keys())
 
 
-    def get(self, idx: int) -> Tuple[torch.Tensor, torch.Tensor]:
+    def get(self, idx: int) -> dict:
         return self._windows[idx]
 
 
     def __getitem__(self, idx: int) -> Tuple[torch.Tensor, torch.Tensor]:
-        """
-        Recupera un singolo campione e la sua etichetta.
-
-        Args:
-            idx (int): Indice del campione.
-
-        Returns:
-            Tuple[torch.Tensor, torch.Tensor]: Una tupla contenente il tensore
-                                              del segmento ECG e il tensore
-                                              dell'etichetta (classe AAMI).
-                                              Il segmento ECG avrà la forma (1, segment_length)
-                                              per essere compatibile con layer convoluzionali
-                                              che si aspettano (canali, lunghezza).
-        """
         
-        window_data = self._windows[idx]
-        return window_data['signal'], window_data['BPM']
 
+        
+        
+        if self._dataMode is DatasetDataMode.BEAT_CLASSIFICATION:
+            window_data = self._windows[idx]
+            return window_data['signal_fragment'], SampleType.mapBeatToNumber(window_data['beatType'])
+        
+        elif self._dataMode is DatasetDataMode.BPM_REGRESSION: 
+            window_data = self._windows[idx]
+            return window_data['signal'], window_data['BPM']
+
+        else:
+            raise ValueError(f"Modalità {self._dataMode} non valida") 
 
     def plot_windows(self, idx: int, asfile: bool = False, save: bool = False) -> Image.Image | None:
         """

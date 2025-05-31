@@ -2,7 +2,7 @@ import os
 import pytorch_lightning as pl
 import torch
 
-from dataset.dataset import MITBIHDataset, DatasetMode
+from dataset.dataset import MITBIHDataset, DatasetMode, DatasetDataMode
 from torch.utils.data import DataLoader
 
 
@@ -10,11 +10,12 @@ class Mitbih_datamodule(pl.LightningDataModule):
     
     def __init__(self, 
             datasetFolder:str, 
+            datasetDataMode: DatasetDataMode, 
             batch_size: int = 1, 
             num_workers: int  = 1,
-            sample_rate: int = 360,
-            window_size_t: int = 10,
-            window_stride_t: int = 5,
+            sample_rate: int | None = None,
+            sample_per_window: int | None = None,
+            sample_per_stride: int | None = None,
             pin_memory: bool = True,
             persistent_workers: bool = True
         ):
@@ -29,6 +30,9 @@ class Mitbih_datamodule(pl.LightningDataModule):
         self._datasetFolder = datasetFolder
         self._batch_size = batch_size
         self._num_workers = num_workers
+        self._sample_per_window = sample_per_window
+        self._sample_per_stride = sample_per_stride
+        self._datasetDataMode = datasetDataMode
         
         self._prefetch_factor: int | None = 1
         self._persistent_workers: bool = persistent_workers
@@ -39,15 +43,11 @@ class Mitbih_datamodule(pl.LightningDataModule):
             self._pin_memory = False
             self._prefetch_factor = None
             
-        MITBIHDataset.initDataset(datasetFolder)
-        MITBIHDataset.init_dataset()
-        
-        sample_per_window = sample_rate * window_size_t
-        sample_per_stride = sample_rate * window_stride_t
-            
-        self._TRAINING_DATASET = MITBIHDataset(mode=DatasetMode.TRAINING, sample_rate=sample_rate, sample_per_window=sample_per_window, sample_per_stride=sample_per_stride)
-        self._VALIDATION_DATASET = MITBIHDataset(mode=DatasetMode.VALIDATION, sample_rate=sample_rate, sample_per_window=sample_per_window, sample_per_stride=sample_per_stride)
-        self._TEST_DATASET = MITBIHDataset(mode=DatasetMode.TEST, sample_rate=sample_rate, sample_per_window=sample_per_window, sample_per_stride=sample_per_stride)
+        MITBIHDataset.initDataset(path=datasetFolder, sample_rate=sample_rate)
+     
+        self._TRAINING_DATASET = MITBIHDataset(dataMode=self._datasetDataMode, mode=DatasetMode.TRAINING, sample_per_window=sample_per_window, sample_per_stride=sample_per_stride)
+        self._VALIDATION_DATASET = MITBIHDataset(dataMode=self._datasetDataMode, mode=DatasetMode.VALIDATION, sample_per_window=sample_per_window, sample_per_stride=sample_per_stride)
+        self._TEST_DATASET = MITBIHDataset(dataMode=self._datasetDataMode, mode=DatasetMode.TEST, sample_per_window=sample_per_window, sample_per_stride=sample_per_stride)
     
     def print_all_training_ecg_signals(self, output_folder: str) -> None:
         os.makedirs(output_folder, exist_ok=True)
