@@ -272,16 +272,23 @@ def training_classification(
     start_epoch: int = 0
     best_val_loss = float('inf')
     
+
     model.to(device)
     train_dataloader = dataModule.train_dataloader()
     val_dataloader = dataModule.val_dataloader()
     
-    # Get class weights from the dataset
-    class_weights = dataModule.get_train_dataset().getWeights().to(device)
+
+    class_weights = dataModule.get_train_dataset().getClassWeights().to(device)
+    class_to_ignore = SampleType.get_ignore_class_value()
+    classes_number = SampleType.num_classes()
     
-    # Loss function: CrossEntropyLoss with weights and ignore_index=6
-    # Class 6 (Unknown Beat Q) is ignored as per requirement
-    loss_function = nn.CrossEntropyLoss(weight=class_weights, ignore_index=6)
+    category_weights = dataModule.get_train_dataset().getCategoryWeights().to(device)
+    category_to_ignore = SampleType.get_ignore_category_value()
+    categories_number = SampleType.num_of_category()
+    
+
+    class_loss_function = nn.CrossEntropyLoss(weight=class_weights, ignore_index=class_to_ignore)
+    category_loss_function = nn.CrossEntropyLoss(weight=category_weights, ignore_index=category_to_ignore)
     
     optimizer = optim.Adam(model.parameters(), lr=start_lr)
     
@@ -303,16 +310,13 @@ def training_classification(
             start_epoch = checkpoint_data['epoch'] + 1
             print(f"Riprendi l'addestramento dall'epoca {start_epoch} con validation loss {best_val_loss:.4f}")
 
-    class_labels = [
-        "Normal", "SVEB", "VEB", "Fusion", 
-        "Ventricular Flutter Wave", "Paced Beat", "Unknown Beat (Ignored)"
-    ]
+    
 
     with open(training_log_path, 'a') as log_file:
         if os.stat(training_log_path).st_size != 0:
             log_file.write(f"\n{'='*80}\n")
 
-        log_file.write("Epoch, lr, Train_Loss, Val_Loss, Accuracy, F1_Macro, Precision_Macro, Recall_Macro\n")
+        log_file.write("Epoch, lr, Train_Loss, Val_Loss, Class_Accuracy, Class_F1_Macro, Class_Precision_Macro, Class_Recall_Macro, Category_Accuracy, Category_F1_Macro, Category_Precision_Macro, Category_Recall_Macro\n")
         
         for epoch in range(start_epoch, num_epochs):
             print(f"Epoca {epoch+1}/{num_epochs}")
@@ -321,91 +325,124 @@ def training_classification(
             model.train()
             total_train_loss = 0
             
-            train_preds = []
-            train_targets = []
+            train_class_preds = []
+            train_class_targets = []
+            train_category_preds = []
+            train_category_targets = []
 
             train_loop = tqdm(train_dataloader, leave=False, desc=f"Training Epoca {epoch+1}")
-            for batch_idx, (signal, labels) in enumerate(train_loop):
+            for batch_idx, (signal, class_labels, category_labels) in enumerate(train_loop):
                 signal = signal.to(device)
-                labels = labels.squeeze(1).long().to(device) # Ensure labels are 1D and Long type
-                #labels = F.one_hot(labels, num_classes=7).float() # Convert to one-hot with 7 classes
-                
-                # print(signal.shape)
-                # print(labels.shape)
+                class_labels = class_labels.squeeze(1).long().to(device)
+                category_labels = category_labels.squeeze(1).long().to(device)
                 
                 optimizer.zero_grad()
                 outputs = model(signal) # Outputs are logits
                 
-                #print(outputs.shape)
+                class_loss = class_loss_function(outputs[0], class_labels)
+                category_loss = category_loss_function(outputs[1], category_labels) # Assuming model outputs can be used for category directly or needs adjustment
                 
-                loss = loss_function(outputs, labels)
+                # Combine losses - you might want to weight these differently
+                loss = class_loss + category_loss # Simple sum for now
+                
                 loss.backward()
                 optimizer.step()
 
                 total_train_loss += loss.item()
                 
-                # Collect predictions and true labels, ignoring class 6
-                preds = torch.argmax(outputs, dim=1)
+                # Collect predictions and true labels for classes
+                class_preds = torch.argmax(outputs[0], dim=1)
+                category_preds = torch.argmax(outputs[1], dim=1)
                 
-                # Filter out ignored class 6 for metric calculation
-                valid_indices = (labels != 6)
-                train_preds.extend(preds[valid_indices].cpu().numpy())
-                train_targets.extend(labels[valid_indices].cpu().numpy())
+                valid_class_indices = (class_labels != class_to_ignore)
+                train_class_preds.extend(class_preds[valid_class_indices].cpu().numpy())
+                train_class_targets.extend(class_labels[valid_class_indices].cpu().numpy())
+
+                # Collect predictions and true labels for categories
+                # For categories, we need to map class predictions to categories
+                # This assumes SampleType.getBeatCategory can be applied to the predicted class index
+                #category_preds = torch.tensor([SampleType.getBeatCategory(SampleType.mapBeatCategory_to_Label(p.item())) for p in category_preds]).to(device)
+                valid_category_indices = (category_labels != category_to_ignore)
+                train_category_preds.extend(category_preds[valid_category_indices].cpu().numpy())
+                train_category_targets.extend(category_labels[valid_category_indices].cpu().numpy())
                 
-                train_loop.set_description(f"Training Epoca {epoch+1} Loss: {loss.item():.4f}")
+                train_loop.set_description(f"Training Epoca {epoch+1} Loss: {loss.item():.4f} LR: {scheduler.get_last_lr()}")
 
             avg_train_loss = total_train_loss / len(train_dataloader) # Divide by number of batches
 
             # --- Fase di Validation ---
             model.eval()
-            total_val_loss = 0
+            total_val_loss:float = 0.0
             
-            val_preds = []
-            val_targets = []
+            val_class_preds = []
+            val_class_targets = []
+            val_category_preds = []
+            val_category_targets = []
 
             val_loop = tqdm(val_dataloader, leave=False, desc=f"Validation Epoca {epoch+1}")
             with torch.no_grad():
-                for batch_idx, (signal, labels) in enumerate(val_loop):
+                for batch_idx, (signal, class_labels, category_labels) in enumerate(val_loop):
                     signal = signal.to(device)
-                    labels = labels.squeeze(1).long().to(device) # Ensure labels are 1D and Long type
-                    #labels = F.one_hot(labels, num_classes=7).float() # Convert to one-hot with 7 classes
+                    class_labels = class_labels.squeeze(1).long().to(device)
+                    category_labels = category_labels.squeeze(1).long().to(device)
                     
                     outputs = model(signal)
-                    loss = loss_function(outputs, labels)
+                    
+                    class_loss = class_loss_function(outputs[0], class_labels)
+                    category_loss = category_loss_function(outputs[1], category_labels)
+                    
+                    
+                    loss = class_loss + category_loss
                     
                     total_val_loss += loss.item()
                     
-                    preds = torch.argmax(outputs, dim=1)
+                    print(f"{class_loss} {category_loss} {loss}")
                     
-                    # Filter out ignored class 6 for metric calculation
-                    valid_indices = (labels != 6)
-                    val_preds.extend(preds[valid_indices].cpu().numpy())
-                    val_targets.extend(labels[valid_indices].cpu().numpy())
+                    # Collect predictions and true labels for classes
+                    class_preds = torch.argmax(outputs[0], dim=1)
+                    valid_class_indices = (class_labels != class_to_ignore)
+                    val_class_preds.extend(class_preds[valid_class_indices].cpu().numpy())
+                    val_class_targets.extend(class_labels[valid_class_indices].cpu().numpy())
+
+                    # Collect predictions and true labels for categories
+                    #category_preds = torch.tensor([SampleType.getBeatCategory(SampleType.mapBeatClass_to_Label(p.item())) for p in class_preds]).to(device)
+                    
+                    category_preds  = torch.argmax(outputs[1], dim=1)
+                    valid_category_indices = (category_labels != category_to_ignore)
+                    val_category_preds.extend(category_preds[valid_category_indices].cpu().numpy())
+                    val_category_targets.extend(category_labels[valid_category_indices].cpu().numpy())
                     
                     val_loop.set_description(f"Validation Epoca {epoch+1} Loss: {loss.item():.4f}")
 
             avg_val_loss = total_val_loss / len(val_dataloader) # Divide by number of batches
 
-            # Calculate metrics
-            # Ensure that the labels passed to sklearn metrics do not contain the ignored class
-            # And that the predictions are also filtered accordingly.
-            # The unique labels for confusion matrix should exclude 6.
-            unique_labels_for_metrics = [i for i in range(len(class_labels)) if i != 6]
+            # Calculate metrics for Classes
+            unique_class_labels_for_metrics = [i for i in range(classes_number) if i != class_to_ignore]
+            cm_class = confusion_matrix(val_class_targets, val_class_preds, labels=unique_class_labels_for_metrics)
+            plot_confusion_matrix(cm_class, [SampleType.mapBeatClass_to_Label(i) for i in unique_class_labels_for_metrics], epoch + 1, confusion_matrix_dir)
 
-            cm = confusion_matrix(val_targets, val_preds, labels=unique_labels_for_metrics)
-            plot_confusion_matrix(cm, [class_labels[i] for i in unique_labels_for_metrics], epoch + 1, confusion_matrix_dir)
+            accuracy_class = accuracy_score(val_class_targets, val_class_preds)
+            f1_macro_class = f1_score(val_class_targets, val_class_preds, average='macro', labels=unique_class_labels_for_metrics, zero_division=0)
+            precision_macro_class = precision_score(val_class_targets, val_class_preds, average='macro', labels=unique_class_labels_for_metrics, zero_division=0)
+            recall_macro_class = f1_score(val_class_targets, val_class_preds, average='macro', labels=unique_class_labels_for_metrics, zero_division=0) 
 
-            accuracy = accuracy_score(val_targets, val_preds)
-            f1_macro = f1_score(val_targets, val_preds, average='macro', labels=unique_labels_for_metrics)
-            precision_macro = precision_score(val_targets, val_preds, average='macro', labels=unique_labels_for_metrics)
-            recall_macro = f1_score(val_targets, val_preds, average='macro', labels=unique_labels_for_metrics) # F1-score is harmonic mean of precision and recall
+            # Calculate metrics for Categories
+            unique_category_labels_for_metrics = [i for i in range(categories_number) if i != category_to_ignore]
+            cm_category = confusion_matrix(val_category_targets, val_category_preds, labels=unique_category_labels_for_metrics)
+            plot_confusion_matrix(cm_category, [SampleType.mapBeatCategory_to_Label(i) for i in unique_category_labels_for_metrics], epoch + 1, os.path.join(confusion_matrix_dir, "category_confusion_matrix")) # Save category CM in a subfolder or with a different name
+
+            accuracy_category = accuracy_score(val_category_targets, val_category_preds)
+            f1_macro_category = f1_score(val_category_targets, val_category_preds, average='macro', labels=unique_category_labels_for_metrics, zero_division=0)
+            precision_macro_category = precision_score(val_category_targets, val_category_preds, average='macro', labels=unique_category_labels_for_metrics, zero_division=0)
+            recall_macro_category = f1_score(val_category_targets, val_category_preds, average='macro', labels=unique_category_labels_for_metrics, zero_division=0)
 
             print(f"Epoca {epoch+1}: Training Loss = {avg_train_loss:.4f}, Validation Loss = {avg_val_loss:.4f}")
-            print(f"Accuracy: {accuracy:.4f}, F1-Macro: {f1_macro:.4f}, Precision-Macro: {precision_macro:.4f}, Recall-Macro: {recall_macro:.4f}")
+            print(f"Class Metrics - Accuracy: {accuracy_class:.4f}, F1-Macro: {f1_macro_class:.4f}, Precision-Macro: {precision_macro_class:.4f}, Recall-Macro: {recall_macro_class:.4f}")
+            print(f"Category Metrics - Accuracy: {accuracy_category:.4f}, F1-Macro: {f1_macro_category:.4f}, Precision-Macro: {precision_macro_category:.4f}, Recall-Macro: {recall_macro_category:.4f}")
 
             scheduler.step(avg_val_loss)
 
-            log_file.write(f"{epoch+1}, {optimizer.param_groups[0]['lr']:.6f}, {avg_train_loss:.6f}, {avg_val_loss:.6f}, {accuracy:.6f}, {f1_macro:.6f}, {precision_macro:.6f}, {recall_macro:.6f}\n")
+            log_file.write(f"{epoch+1}, {optimizer.param_groups[0]['lr']:.6f}, {avg_train_loss:.6f}, {avg_val_loss:.6f}, {accuracy_class:.6f}, {f1_macro_class:.6f}, {precision_macro_class:.6f}, {recall_macro_class:.6f}, {accuracy_category:.6f}, {f1_macro_category:.6f}, {precision_macro_category:.6f}, {recall_macro_category:.6f}\n")
             log_file.flush()
 
             if avg_val_loss < best_val_loss:
@@ -563,9 +600,9 @@ def main():
         args.dataset_path, 
         datasetDataMode=DatasetDataMode.BEAT_CLASSIFICATION,
         sample_rate=sample_rate, 
-        sample_per_window=sample_rate,#args.window_size,
+        sample_per_window=int(sample_rate*0.6),#args.window_size,
         num_workers=4,
-        batch_size=12
+        batch_size=128#12
     )
     
     # dataset = dataModule.get_train_dataset()
@@ -589,7 +626,7 @@ def main():
     
     
    
-    model = ResNet1D(in_channels_signal=2, output_dim=7)
+    model = ResNet1D(in_channels_signal=2, classes_output_dim=SampleType.num_classes(),categories_output_dim=SampleType.num_of_category())
 
     
     # model = Transformer_BPM_Regressor(

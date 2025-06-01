@@ -27,61 +27,77 @@ class DatasetMode(Enum):
 class DatasetDataMode(Enum):
     BEAT_CLASSIFICATION = auto()
     BPM_REGRESSION = auto()
-    
+
+#https://archive.physionet.org/physiobank/database/html/mitdbdir/intro.htm#leads
 class SampleType(Enum):
     
-    #BEAT
-    NORMAL_N = "N"
-    NORMAL_L = "L"
-    NORMAL_R = "R"
-    NORMAL_B = "B"
-    NORMAL_LINE = "|"
+    #Normal e battiti di conduzione normale
+    NORMAL_BEAT = "N",1, "Normal beat"
+    LEFT_BUNDLE_BRANCH_BLOCK_BEAT = "L",2, "Left bundle branch block beat"
+    RIGHT_BUNDLE_BRANCH_BLOCK_BEAT = "R",3, "Right bundle branch block beat"
+    LEFT_OR_RIGHT_BUNDLE_BRANCH_BLOCK_BEAT = "B",0, "?"
+    NODAL_JUNCTIONAL_ESCAPE_BEAT = "j",4, "Nodal (junctional) escape beat"
+    ATRIAL_ESCAPE_BEAT = "e",5, "Atrial escape beat"
     
-    SVEB_A = "A"
-    SVEB_a = "a"
-    SVEB_J = "J"
-    SVEB_j = "j"
-    SVEB_S = "S"
+    #Battiti sopra-ventricolari (Supraventricular ectopic)
+    ATRIAL_PREMATURE_BEAT = "A",6, "Atrial premature beat"
+    ABERRATED_ATRIAL_PREMATURE_BEAT = "a",7, "Aberrated atrial premature beat"
+    NODAL_JUNCTIONAL_PREMATURE_BEAT = "J",8, "Nodal (junctional) premature beat"
+    SUPRAVENTRICULAR_PREMATURE_BEAT = "S",9, "Supraventricular premature beat"
     
-    VEB_V = "V"
-    VEB_E = "E"
-    VEB_e = "e"
+    #Battiti ventricolari (Ventricular ectopic)
+    PREMATURE_VENTRICULAR_CONTRACTION = "V", 10, "Premature ventricular contraction"
+    VENTRICULAR_ESCAPE_BEAT = "E",11, "Ventricular escape beat"
     
-    FUSION_F = "F"
-    FUSION_f = "f"
+    
+    #Fusion beats
+    FUSION_OF_VENTRICULAR_AND_NORMAL_BEAT = "F", 12, "Fusion of ventricular and normal beat"
+    FUSION_OF_PACED_AND_NORMAL_BEAT = "f", 12, "Fusion of paced and normal beat"
    
-    VENTRICULAR_FLUTTER_WAVE = "!"
-    UNKNOWN_BEAT_Q = "Q"
-    PACED_BEAT = "/"
+    #ignore or unknow
+    ISOLATED_QRS_LIKE_ARTIFACT = "|", 0, "Isolated QRS-like artifact"
+    VENTRICULAR_FLUTTER_WAVE = "!", 13, "Ventricular flutter wave"
+    UNKNOWN_BEAT_Q = "Q", 0, "Unclassifiable beat"
+    PACED_BEAT = "/", 0, "Paced beat"
   
     #ANNOTATION
-    CHANGE_IN_SIGNAL_QUALITY = "~"
-    NOISE = "X x"
-    START_NOISE = "["
-    END_NOISE = "]"
-    START_SEG_PLUS = "+"
-    COMMENT = "\""
+    CHANGE_IN_SIGNAL_QUALITY = "~", -1, "?"
+    NOISE = "X x", -1, "?"
+    START_NOISE = "[", -1, "?"
+    END_NOISE = "]", -1, "?"
+    START_SEG_PLUS = "+", -1, "?"
+    COMMENT = "\"", -1, "?"
     
+    def __str__(self):
+        return self.value[0]
+    
+
+    @classmethod
+    def toList(cls):
+        return list(map(lambda c: c.value, cls))
     
     @classmethod
-    def to_Label(cls, type: str) -> 'SampleType':
+    def tokenize(cls, type: str) -> 'SampleType':
         if not isinstance(type, str) or len(type) == 0:
             raise ValueError(f"Tipo di battito non valido: {type}")
 
         # Mappa il carattere a un oggetto SampleType usando i valori degli enum
         type_char = type.strip()[0]
         for member in cls:
-            if type_char in member.value.split():
+            if type_char in member.value[0].split():
                 return member
         raise ValueError(f"Tipo di battito sconosciuto: {type_char}. Non può essere convertito in SampleType.")
     
     @classmethod  
     def isBeat(cls, annotation: 'SampleType') -> bool:
         return annotation in {
-            cls.NORMAL_N, cls.NORMAL_L, cls.NORMAL_R, cls.NORMAL_B, cls.NORMAL_LINE,
-            cls.SVEB_A, cls.SVEB_a, cls.SVEB_J, cls.SVEB_j, cls.SVEB_S,
-            cls.VEB_V, cls.VEB_E, cls.VEB_e,
-            cls.FUSION_F, cls.FUSION_f,
+            cls.NORMAL_BEAT, cls.LEFT_BUNDLE_BRANCH_BLOCK_BEAT, cls.RIGHT_BUNDLE_BRANCH_BLOCK_BEAT,
+            cls.LEFT_OR_RIGHT_BUNDLE_BRANCH_BLOCK_BEAT, cls.ISOLATED_QRS_LIKE_ARTIFACT,
+            cls.ATRIAL_PREMATURE_BEAT, cls.ABERRATED_ATRIAL_PREMATURE_BEAT,
+            cls.NODAL_JUNCTIONAL_PREMATURE_BEAT, cls.NODAL_JUNCTIONAL_ESCAPE_BEAT,
+            cls.SUPRAVENTRICULAR_PREMATURE_BEAT, cls.PREMATURE_VENTRICULAR_CONTRACTION,
+            cls.VENTRICULAR_ESCAPE_BEAT, cls.ATRIAL_ESCAPE_BEAT,
+            cls.FUSION_OF_VENTRICULAR_AND_NORMAL_BEAT, cls.FUSION_OF_PACED_AND_NORMAL_BEAT,
             cls.VENTRICULAR_FLUTTER_WAVE, cls.UNKNOWN_BEAT_Q, cls.PACED_BEAT
         }
     
@@ -93,32 +109,69 @@ class SampleType(Enum):
         }
         
     @classmethod
-    def mapBeatToNumber(cls, beat: 'SampleType') -> int:
-        
+    def getBeatCategory(cls, beat: 'SampleType') -> int:
         match beat:
-            case SampleType.NORMAL_N | SampleType.NORMAL_L | SampleType.NORMAL_R | SampleType.NORMAL_B | SampleType.NORMAL_LINE:
+            case cls.NORMAL_BEAT | cls.LEFT_BUNDLE_BRANCH_BLOCK_BEAT | cls.RIGHT_BUNDLE_BRANCH_BLOCK_BEAT | cls.LEFT_OR_RIGHT_BUNDLE_BRANCH_BLOCK_BEAT | cls.ISOLATED_QRS_LIKE_ARTIFACT:
                 return 0
-        
-            case SampleType.SVEB_A | SampleType.SVEB_a | SampleType.SVEB_J | SampleType.SVEB_j | SampleType.SVEB_S:
+            case cls.ATRIAL_PREMATURE_BEAT | cls.ABERRATED_ATRIAL_PREMATURE_BEAT | cls.NODAL_JUNCTIONAL_PREMATURE_BEAT | cls.NODAL_JUNCTIONAL_ESCAPE_BEAT | cls.SUPRAVENTRICULAR_PREMATURE_BEAT:
                 return 1
-            
-            case SampleType.VEB_V | SampleType.VEB_E | SampleType.VEB_e:  
+            case cls.PREMATURE_VENTRICULAR_CONTRACTION | cls.VENTRICULAR_ESCAPE_BEAT | cls.ATRIAL_ESCAPE_BEAT:
                 return 2
-            
-            case SampleType.FUSION_F | SampleType.FUSION_f :
+            case cls.FUSION_OF_VENTRICULAR_AND_NORMAL_BEAT | cls.FUSION_OF_PACED_AND_NORMAL_BEAT:
                 return 3
-            
-            case SampleType.VENTRICULAR_FLUTTER_WAVE:
+            case cls.VENTRICULAR_FLUTTER_WAVE:
                 return 4
-            
-            case SampleType.PACED_BEAT:
+            case cls.PACED_BEAT:
                 return 5
-
-            case SampleType.UNKNOWN_BEAT_Q:
+            case cls.UNKNOWN_BEAT_Q:
                 return 6
-            
-            case _ :
+            case _:
                 raise ValueError(f"Il beat {beat} non ha una mappatura numerica definita.")
+
+    @classmethod
+    def mapBeatClass_to_Label(cls, idx: int) -> str:
+        if idx <= 0 or idx >= cls.num_classes(): return "Unknow"
+        
+        for enm in cls.toList():
+            if enm[1]==idx: return f"{enm[2]} ({enm[0]})"
+        else:
+            return "Unknow"
+        
+    @classmethod
+    def mapBeatCategory_to_Label(cls, idx: int) -> str:
+        match idx:
+            case 0: return "Normal"
+            case 1: return  "SVEB"
+            case 2: return  "VEB"
+            case 3: return  "Fusion"
+            case 4: return  "Ventricular Flutter Wave"
+            case 5: return  "Paced Beat"
+            case _: return  "Unknown Beat (Ignored)"
+        
+        
+    @classmethod
+    def getBeatClass(cls, beat: 'SampleType') -> int:
+        return beat.value[1]
+    
+    @classmethod
+    def num_classes(cls) -> int:
+        """Restituisce il numero di classi per la classificazione (escluse le annotazioni e i battiti ignorati)."""
+        return 14
+    
+    @classmethod
+    def num_of_category(cls) -> int:
+        """Restituisce il numero di classi per la classificazione (escluse le annotazioni e i battiti ignorati)."""
+        return 7
+
+    @classmethod
+    def get_ignore_class_value(cls) -> int:
+        """Restituisce l'etichetta numerica che dovrebbe essere ignorata (es. UNKNOWN)"""
+        return 0
+    
+    @classmethod
+    def get_ignore_category_value(cls) -> int:
+        """Restituisce l'etichetta numerica che dovrebbe essere ignorata (es. UNKNOWN)"""
+        return 6
       
     
   
@@ -191,8 +244,6 @@ class MITBIHDataset(Dataset):
         #========================================================================#
         # VERIFICO I FILES
         #========================================================================#
-        
-
         if not os.path.isdir(path):
             raise FileNotFoundError(f"La directory specificata non esiste: {path}")
         APP_LOGGER.info(f"Percorso del dataset impostato su: {cls._DATASET_PATH}")
@@ -258,6 +309,8 @@ class MITBIHDataset(Dataset):
         
         try:    
             for record_name in cls._ALL_RECORDS:
+                progress_bar.set_description(f"record {record_name}")
+                
                 #progress_bar.display(record_name)
                 csv_filepath = os.path.join(MITBIHDataset._DATASET_PATH, f"{record_name}.csv")
                 txt_filepath = os.path.join(MITBIHDataset._DATASET_PATH, f"{record_name}annotations.txt")
@@ -311,7 +364,7 @@ class MITBIHDataset(Dataset):
                         if len(parts) < 3:
                             raise ValueError(f"Riga di annotazione non valida: {line}.")
 
-                        annotationType = SampleType.to_Label(parts[2])
+                        annotationType = SampleType.tokenize(parts[2])
 
                         if SampleType.isBeat(annotationType):
                             beat_dataDict_List.append({
@@ -359,7 +412,8 @@ class MITBIHDataset(Dataset):
   
         #dizionario delle finestre di dati     
         self._windows: Dict[int, Dict[str, any]] = {} 
-        self._class_weights: torch.Tensor | None = None      
+        self._class_weights: torch.Tensor | None = None  
+        self._category_weights: torch.Tensor | None = None      
         self._record_windows: Dict[str, Dict[int, Dict[str, any]]] = {}
         self._BPM_toWindows: Dict[int, list] = {}
         
@@ -369,6 +423,7 @@ class MITBIHDataset(Dataset):
         
         APP_LOGGER.info("-"*100)
         APP_LOGGER.info(f"Caricamento valori per {self._mode} in modalità {self._dataMode}")
+        
         match self._dataMode:
             case DatasetDataMode.BPM_REGRESSION: 
                 self._load_data_for_BPM_regression()
@@ -399,9 +454,13 @@ class MITBIHDataset(Dataset):
             case _ :
                 raise ValueError(f"Modalità per i dati non valida: {self._dataMode}")
         
-    def getWeights(self) -> torch.Tensor:
+    def getClassWeights(self) -> torch.Tensor:
         assert self._dataMode == DatasetDataMode.BEAT_CLASSIFICATION, "I pesi sono disponibili solo per la classificazione"
         return self._class_weights.detach().clone()
+    
+    def getCategoryWeights(self) -> torch.Tensor:
+        assert self._dataMode == DatasetDataMode.BEAT_CLASSIFICATION, "I pesi sono disponibili solo per la classificazione"
+        return self._category_weights.detach().clone()
     
     def _load_data_for_BPM_regression(self):
         """Carica i dati dai record selezionati (CSV per segnale, TXT per annotazioni)."""
@@ -489,10 +548,10 @@ class MITBIHDataset(Dataset):
                     match beat_type:
                         
                         #Se è un beat
-                        case SampleType.NORMAL_N | SampleType.NORMAL_L | SampleType.NORMAL_R | SampleType.NORMAL_B | SampleType.NORMAL_LINE\
-                            | SampleType.SVEB_A | SampleType.SVEB_a | SampleType.SVEB_J | SampleType.SVEB_j | SampleType.SVEB_S\
-                            | SampleType.VEB_V | SampleType.VEB_E | SampleType.VEB_e \
-                            | SampleType.FUSION_F | SampleType.FUSION_f \
+                        case SampleType.NORMAL_BEAT | SampleType.LEFT_BUNDLE_BRANCH_BLOCK_BEAT | SampleType.RIGHT_BUNDLE_BRANCH_BLOCK_BEAT | SampleType.LEFT_OR_RIGHT_BUNDLE_BRANCH_BLOCK_BEAT | SampleType.ISOLATED_QRS_LIKE_ARTIFACT\
+                            | SampleType.ATRIAL_PREMATURE_BEAT | SampleType.ABERRATED_ATRIAL_PREMATURE_BEAT | SampleType.NODAL_JUNCTIONAL_PREMATURE_BEAT | SampleType.NODAL_JUNCTIONAL_ESCAPE_BEAT | SampleType.SUPRAVENTRICULAR_PREMATURE_BEAT\
+                            | SampleType.PREMATURE_VENTRICULAR_CONTRACTION | SampleType.VENTRICULAR_ESCAPE_BEAT | SampleType.ATRIAL_ESCAPE_BEAT \
+                            | SampleType.FUSION_OF_VENTRICULAR_AND_NORMAL_BEAT | SampleType.FUSION_OF_PACED_AND_NORMAL_BEAT \
                             | SampleType.UNKNOWN_BEAT_Q | SampleType.PACED_BEAT | SampleType.VENTRICULAR_FLUTTER_WAVE:
                                 
                                         
@@ -700,6 +759,7 @@ class MITBIHDataset(Dataset):
         
         try:
             for record_name in MITBIHDataset._ALL_RECORDS:
+                progress_bar.set_description(f"record {record_name}")
                 
                 if done:
                     break
@@ -771,7 +831,8 @@ class MITBIHDataset(Dataset):
                     self._windows[window_counter] = {
                         'signal_fragment' : signal_fragment,
                         'beatType': beat_type,
-                        'class' : torch.tensor([SampleType.mapBeatToNumber(beat_type)], dtype=torch.int32),
+                        'class' : torch.tensor([SampleType.getBeatClass(beat_type)], dtype=torch.long),
+                        'category': torch.tensor([SampleType.getBeatCategory(beat_type)], dtype=torch.long),
                         'record_name': record_name,
                     }
                     window_counter += 1
@@ -801,7 +862,28 @@ class MITBIHDataset(Dataset):
             unique_classes = np.unique(all_classes)
             class_weights = compute_class_weight(class_weight='balanced', classes=unique_classes, y=all_classes)
             self._class_weights = torch.tensor(class_weights, dtype=torch.float32)
+            
+            
+            all_classes = [self._windows[i]['category'].item() for i in self._windows]
+            all_classes = sorted(all_classes)
+            
+            for n in all_classes:
+                if classes_number.get(n) is None:
+                    classes_number[n] = 1
+                else:
+                    classes_number[n] += 1
+                    
+            for k, v in classes_number.items():
+                p = v/len(all_classes) * 100
+                APP_LOGGER.info(f"Categoria {k} ({p:.4f}%): {v}")
+            
+            unique_classes = np.unique(all_classes)
+            class_weights = compute_class_weight(class_weight='balanced', classes=unique_classes, y=all_classes)
+            self._category_weights = torch.tensor(class_weights, dtype=torch.float32)
+            
+            
             APP_LOGGER.info(f"Pesi delle classi calcolati:\n{self._class_weights}")
+            APP_LOGGER.info(f"Pesi delle categorie calcolati:\n{self._category_weights}")
         
 
     @classmethod    
@@ -833,7 +915,7 @@ class MITBIHDataset(Dataset):
         
         if self._dataMode is DatasetDataMode.BEAT_CLASSIFICATION:
             window_data = self._windows[idx]
-            return window_data['signal_fragment'], window_data['class']
+            return window_data['signal_fragment'], window_data['class'], window_data['category']
         
         elif self._dataMode is DatasetDataMode.BPM_REGRESSION: 
             window_data = self._windows[idx]

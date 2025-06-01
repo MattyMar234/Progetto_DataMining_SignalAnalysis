@@ -1,3 +1,4 @@
+from typing import Tuple
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -42,12 +43,11 @@ class ResNet1D(nn.Module):
     """
     Implementazione della ResNet adattata per input 1D (segnali).
     """
-    def __init__(self, in_channels_signal=1, output_dim=1):
+    def __init__(self, in_channels_signal=1, classes_output_dim=1, categories_output_dim=1):
         super(ResNet1D, self).__init__()
-        self.in_channels = 64 # Numero iniziale di canali in uscita dal primo strato convoluzionale
+        self.in_channels = 64 
 
-        # Primo strato convoluzionale 1D
-        # kernel_size=7, stride=2 per ridurre la lunghezza del segnale
+        
         self.conv1 = nn.Conv1d(in_channels_signal, 64, kernel_size=7, stride=2, padding=3, bias=False)
         self.bn1 = nn.BatchNorm1d(64)
         self.relu = nn.ReLU(inplace=True)
@@ -63,7 +63,8 @@ class ResNet1D(nn.Module):
         # Global Average Pooling 1D
         self.avgpool = nn.AdaptiveAvgPool1d(1)
         # Strato fully connected finale per regressione
-        self.fc = nn.Linear(512 * BasicBlock1D.expansion, output_dim)
+        self.fc1 = nn.Linear(512 * BasicBlock1D.expansion, classes_output_dim)
+        self.fc2 = nn.Linear(512 * BasicBlock1D.expansion, categories_output_dim)
 
         # Inizializzazione dei pesi
         for m in self.modules():
@@ -72,7 +73,8 @@ class ResNet1D(nn.Module):
             elif isinstance(m, nn.BatchNorm1d):
                 nn.init.constant_(m.weight, 1)
                 nn.init.constant_(m.bias, 0)
-
+                
+                
     def _make_layer(self, block, out_channels, blocks, stride):
         downsample = None
         if stride != 1 or self.in_channels != out_channels * block.expansion:
@@ -90,21 +92,20 @@ class ResNet1D(nn.Module):
 
         return nn.Sequential(*layers)
 
-    def forward(self, x):
+    def forward(self, x) -> Tuple[torch.Tensor, torch.Tensor] :
         x = self.conv1(x)
         x = self.bn1(x)
         x = self.relu(x)
         x = self.maxpool(x)
-
+        
         x = self.layer1(x)
         x = self.layer2(x)
         x = self.layer3(x)
         x = self.layer4(x)
-
+        
         x = self.avgpool(x)
-        # Flatten l'output per lo strato fully connected
-        # x.shape sarà (batch_size, 512, 1) dopo avgpool, quindi flatten a (batch_size, 512)
         x = torch.flatten(x, 1)
-        x = self.fc(x) # Output diretto per regressione
+        x1 = self.fc1(x)
+        x2 = self.fc2(x)
 
-        return x
+        return x1, x2
