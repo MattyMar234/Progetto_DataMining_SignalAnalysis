@@ -5,11 +5,16 @@ from tqdm.auto import tqdm
 import torch.optim as optim
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from torch.optim import lr_scheduler
+from sklearn.metrics import confusion_matrix, f1_score, precision_score, accuracy_score
+import matplotlib.pyplot as plt
+import seaborn as sns
+import numpy as np
 
 
 from NN_component.resNet import ResNet1D
-from dataset.dataset import DatasetDataMode, DatasetMode, MITBIHDataset
+from dataset.dataset import DatasetDataMode, DatasetMode, MITBIHDataset, SampleType
 from dataset.datamodule import Mitbih_datamodule
 import os
 
@@ -231,17 +236,210 @@ def trainModel(
 
     print("Addestramento completato.")
 
+def plot_confusion_matrix(cm, class_labels, epoch, output_dir):
+    plt.figure(figsize=(10, 8))
+    sns.heatmap(cm, annot=True, fmt="d", cmap="Blues", xticklabels=class_labels, yticklabels=class_labels)
+    plt.title(f"Confusion Matrix - Epoch {epoch}")
+    plt.xlabel("Predicted Label")
+    plt.ylabel("True Label")
+    plt.tight_layout()
+    
+    # Ensure output directory exists
+    os.makedirs(output_dir, exist_ok=True)
+    
+    plt.savefig(os.path.join(output_dir, f"confusion_matrix_epoch_{epoch}.png"))
+    plt.close()
+
+def training_classification(
+    device: torch.device, 
+    dataModule: Mitbih_datamodule, 
+    model: nn.Module, 
+    num_epochs: int,
+    start_lr: float = 1e-3,
+    training_log_path:str | None = None,
+    checkpoint_dir: str | None =  None,
+    confusion_matrix_dir: str | None = None,
+    checkpoint: str | None = None
+   ) -> None:
+    
+    assert training_log_path is not None, "File log di training non specificato"
+    assert checkpoint_dir is not None, "Cartella dei checkpoint non specificata"
+    assert confusion_matrix_dir is not None, "Cartella per le matrici di confusione non specificata"
+    
+    os.makedirs(checkpoint_dir, exist_ok=True)
+    os.makedirs(confusion_matrix_dir, exist_ok=True)
+
+    start_epoch: int = 0
+    best_val_loss = float('inf')
+    
+    model.to(device)
+    train_dataloader = dataModule.train_dataloader()
+    val_dataloader = dataModule.val_dataloader()
+    
+    # Get class weights from the dataset
+    class_weights = dataModule.get_train_dataset().getWeights().to(device)
+    
+    # Loss function: CrossEntropyLoss with weights and ignore_index=6
+    # Class 6 (Unknown Beat Q) is ignored as per requirement
+    loss_function = nn.CrossEntropyLoss(weight=class_weights, ignore_index=6)
+    
+    optimizer = optim.Adam(model.parameters(), lr=start_lr)
+    
+    scheduler = lr_scheduler.ReduceLROnPlateau(
+        optimizer,
+        mode='min',         
+        factor=0.8,         
+        patience=4,         
+        threshold=0.0001,   
+        threshold_mode='rel' 
+    )
+    
+    if checkpoint is not None:
+        if os.path.exists(checkpoint):
+            print(f"Caricamento checkpoint da {checkpoint}")
+            checkpoint_data = torch.load(checkpoint, map_location=device)
+            model.load_state_dict(checkpoint_data['model_state_dict'])
+            optimizer.load_state_dict(checkpoint_data['optimizer_state_dict'])
+            start_epoch = checkpoint_data['epoch'] + 1
+            print(f"Riprendi l'addestramento dall'epoca {start_epoch} con validation loss {best_val_loss:.4f}")
+
+    class_labels = [
+        "Normal", "SVEB", "VEB", "Fusion", 
+        "Ventricular Flutter Wave", "Paced Beat", "Unknown Beat (Ignored)"
+    ]
+
+    with open(training_log_path, 'a') as log_file:
+        if os.stat(training_log_path).st_size != 0:
+            log_file.write(f"\n{'='*80}\n")
+
+        log_file.write("Epoch, lr, Train_Loss, Val_Loss, Accuracy, F1_Macro, Precision_Macro, Recall_Macro\n")
+        
+        for epoch in range(start_epoch, num_epochs):
+            print(f"Epoca {epoch+1}/{num_epochs}")
+
+            # --- Fase di Training ---
+            model.train()
+            total_train_loss = 0
+            
+            train_preds = []
+            train_targets = []
+
+            train_loop = tqdm(train_dataloader, leave=False, desc=f"Training Epoca {epoch+1}")
+            for batch_idx, (signal, labels) in enumerate(train_loop):
+                signal = signal.to(device)
+                labels = labels.squeeze(1).long().to(device) # Ensure labels are 1D and Long type
+                #labels = F.one_hot(labels, num_classes=7).float() # Convert to one-hot with 7 classes
+                
+                # print(signal.shape)
+                # print(labels.shape)
+                
+                optimizer.zero_grad()
+                outputs = model(signal) # Outputs are logits
+                
+                #print(outputs.shape)
+                
+                loss = loss_function(outputs, labels)
+                loss.backward()
+                optimizer.step()
+
+                total_train_loss += loss.item()
+                
+                # Collect predictions and true labels, ignoring class 6
+                preds = torch.argmax(outputs, dim=1)
+                
+                # Filter out ignored class 6 for metric calculation
+                valid_indices = (labels != 6)
+                train_preds.extend(preds[valid_indices].cpu().numpy())
+                train_targets.extend(labels[valid_indices].cpu().numpy())
+                
+                train_loop.set_description(f"Training Epoca {epoch+1} Loss: {loss.item():.4f}")
+
+            avg_train_loss = total_train_loss / len(train_dataloader) # Divide by number of batches
+
+            # --- Fase di Validation ---
+            model.eval()
+            total_val_loss = 0
+            
+            val_preds = []
+            val_targets = []
+
+            val_loop = tqdm(val_dataloader, leave=False, desc=f"Validation Epoca {epoch+1}")
+            with torch.no_grad():
+                for batch_idx, (signal, labels) in enumerate(val_loop):
+                    signal = signal.to(device)
+                    labels = labels.squeeze(1).long().to(device) # Ensure labels are 1D and Long type
+                    #labels = F.one_hot(labels, num_classes=7).float() # Convert to one-hot with 7 classes
+                    
+                    outputs = model(signal)
+                    loss = loss_function(outputs, labels)
+                    
+                    total_val_loss += loss.item()
+                    
+                    preds = torch.argmax(outputs, dim=1)
+                    
+                    # Filter out ignored class 6 for metric calculation
+                    valid_indices = (labels != 6)
+                    val_preds.extend(preds[valid_indices].cpu().numpy())
+                    val_targets.extend(labels[valid_indices].cpu().numpy())
+                    
+                    val_loop.set_description(f"Validation Epoca {epoch+1} Loss: {loss.item():.4f}")
+
+            avg_val_loss = total_val_loss / len(val_dataloader) # Divide by number of batches
+
+            # Calculate metrics
+            # Ensure that the labels passed to sklearn metrics do not contain the ignored class
+            # And that the predictions are also filtered accordingly.
+            # The unique labels for confusion matrix should exclude 6.
+            unique_labels_for_metrics = [i for i in range(len(class_labels)) if i != 6]
+
+            cm = confusion_matrix(val_targets, val_preds, labels=unique_labels_for_metrics)
+            plot_confusion_matrix(cm, [class_labels[i] for i in unique_labels_for_metrics], epoch + 1, confusion_matrix_dir)
+
+            accuracy = accuracy_score(val_targets, val_preds)
+            f1_macro = f1_score(val_targets, val_preds, average='macro', labels=unique_labels_for_metrics)
+            precision_macro = precision_score(val_targets, val_preds, average='macro', labels=unique_labels_for_metrics)
+            recall_macro = f1_score(val_targets, val_preds, average='macro', labels=unique_labels_for_metrics) # F1-score is harmonic mean of precision and recall
+
+            print(f"Epoca {epoch+1}: Training Loss = {avg_train_loss:.4f}, Validation Loss = {avg_val_loss:.4f}")
+            print(f"Accuracy: {accuracy:.4f}, F1-Macro: {f1_macro:.4f}, Precision-Macro: {precision_macro:.4f}, Recall-Macro: {recall_macro:.4f}")
+
+            scheduler.step(avg_val_loss)
+
+            log_file.write(f"{epoch+1}, {optimizer.param_groups[0]['lr']:.6f}, {avg_train_loss:.6f}, {avg_val_loss:.6f}, {accuracy:.6f}, {f1_macro:.6f}, {precision_macro:.6f}, {recall_macro:.6f}\n")
+            log_file.flush()
+
+            if avg_val_loss < best_val_loss:
+                best_val_loss = avg_val_loss
+                checkpoint_path = os.path.join(checkpoint_dir, f"Epoch[{epoch+1}]_Loss[{avg_val_loss:.4f}].pth")
+                print(f"Validation loss migliorata ({avg_val_loss:.4f}). Salvataggio modello in {checkpoint_path}")
+                torch.save({
+                    'epoch': epoch,
+                    'model_state_dict': model.state_dict(),
+                    'optimizer_state_dict': optimizer.state_dict(),
+                    'scheduler_state_dict': scheduler.state_dict(), 
+                    'loss': avg_val_loss,
+                }, checkpoint_path)
+
+    print("Addestramento completato.")
+
 def test_model(
     device: torch.device, 
     datamodule: Mitbih_datamodule, 
     model: nn.Module, 
-    checkpoint: str
+    checkpoint: str,
+    task_type: str = "regression" # Add task_type to differentiate
     ):
     
-
-    # Imposta il modello in modalità valutazione
     model.to(device)
-    loss_function = nn.MSELoss()
+    
+    if task_type == "regression":
+        loss_function = nn.MSELoss()
+    elif task_type == "classification":
+        # For testing classification, we might not need weights, but ignore_index is crucial
+        loss_function = nn.CrossEntropyLoss(ignore_index=6) 
+    else:
+        raise ValueError("Invalid task_type for test_model. Must be 'regression' or 'classification'.")
+
     model.eval()
 
     total_test_loss = 0  # Accumula la loss per l'intero set di test
@@ -315,8 +513,7 @@ def test_model(
     return metrics
   
     
-def testModel(device: torch.device, datamodule: Mitbih_datamodule, model, **kwargs) -> None:
-    pass
+
 
 def main():
 
@@ -366,18 +563,22 @@ def main():
         args.dataset_path, 
         datasetDataMode=DatasetDataMode.BEAT_CLASSIFICATION,
         sample_rate=sample_rate, 
-        sample_per_window=40,#args.window_size,
+        sample_per_window=sample_rate,#args.window_size,
         num_workers=4,
         batch_size=12
     )
     
-    dataset = dataModule.get_train_dataset()
+    # dataset = dataModule.get_train_dataset()
+    # path = os.path.join(setting.DATA_FOLDER_PATH,'BEATS', f'plot.png')
+    # dataset.plot_class_distribution(path, False)
+    # dataset.plot_record_with_annotations('101','plot2.png', 60 )
     
-    print(dataset.get(0))
-    print(dataset[0])
+    #dataModule.print_all_window(columNumber=0, save_path=path, dataset=dataset)
+    # for i in range(len(dataset)):
+    #     path = os.path.join(setting.DATA_FOLDER_PATH,'BEATS', f'test{i}_plot.png')
+    #     dataModule.print_window(path, dataset, i)
     
     
-    return
     
     
     #dataModule.print_all_training_ecg_signals(os.path.join(setting.DATA_FOLDER_PATH, 'training_plots'))
@@ -388,7 +589,7 @@ def main():
     
     
    
-    model = ResNet1D(in_channels_signal=2, output_dim=1)
+    model = ResNet1D(in_channels_signal=2, output_dim=7)
 
     
     # model = Transformer_BPM_Regressor(
@@ -415,6 +616,17 @@ def main():
     device: torch.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Utilizzando dispositivo: {device}")
 
+    training_classification(
+        device = device,
+        dataModule = dataModule,
+        model = model,
+        num_epochs = 40,
+        training_log_path=os.path.join(setting.LOGS_FOLDER, 'training_logs.txt'),
+        checkpoint_dir = setting.OUTPUT_PATH,
+        confusion_matrix_dir=setting.LOGS_FOLDER
+        #checkpoint = "/app/Data/Models/Epoch[1]_Loss[inf].pth"
+    
+    )
 
     # trainModel(
     #     device = device,
@@ -426,15 +638,14 @@ def main():
     #     #checkpoint = "/app/Data/Models/Epoch[1]_Loss[inf].pth"
     # )
     
-    test_model(
-        device = device,
-        datamodule = dataModule,
-        model = model,
-        checkpoint = "/app/Data/Models/Epoch[8]_Loss[2.2832].pth"
-    )
+    # test_model(
+    #     device = device,
+    #     datamodule = dataModule,
+    #     model = model,
+    #     checkpoint = "/app/Data/Models/Epoch[8]_Loss[2.2832].pth"
+    # )
     
    
 
 if __name__ == "__main__":
     main()
-    

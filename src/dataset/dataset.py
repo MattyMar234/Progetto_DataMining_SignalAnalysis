@@ -16,6 +16,8 @@ import matplotlib.pyplot as plt
 
 from sklearn.utils.class_weight import compute_class_weight
 
+from setting import APP_LOGGER
+
 # Definizione delle modalità del dataset
 class DatasetMode(Enum):
     TRAINING = auto()
@@ -59,7 +61,6 @@ class SampleType(Enum):
     END_NOISE = "]"
     START_SEG_PLUS = "+"
     COMMENT = "\""
-    
     
     
     @classmethod
@@ -126,6 +127,15 @@ class MITBIHDataset(Dataset):
     Classe PyTorch Dataset adattata per il database MIT-BIH Arrhythmia
     con dati in formato CSV per segnali e TXT per annotazioni.
     """
+    
+    _RECORDS_MLII_V1 = ['101','105','106', '107', '108', '109','111', '112','113','115', '116','118','119','121','122',
+                        '200', '201', '202', '203', '205', '207', '208', '209', '210', '212','213', '214','215','217',
+                        '219', '220', '221', '222', '223', '228', '230','231','232','233','234']
+    _RECORDS_MLII_V2 = ['117', '103']
+    _RECORDS_MLII_V4 = ['124']
+    _RECORDS_MLII_V5 = ['100','114','123']
+    _RECORDS_V5_V2   = ['104', '102']
+    
     _MLII_COL: str = 'MLII'
     _V1_COL: str = 'V1'
     _V2_COL: str = 'V2'
@@ -133,26 +143,11 @@ class MITBIHDataset(Dataset):
     _V4_COL: str = 'V4'
     _V5_COL: str = 'V5'
     
+    # lista dei record da utilizzare
+    _ALL_RECORDS: Final[list] = _RECORDS_MLII_V1 + _RECORDS_MLII_V2 + _RECORDS_MLII_V4 + _RECORDS_MLII_V5 + _RECORDS_V5_V2
     
     _FILES_CHEKED: bool = False
     _DATASET_PATH: None | str = None
-    
-    _RECORDS_V5_V2   = ['104', '102']
-    _RECORDS_MLII_V1 = ['101','105','106', '107', '108', '109','111', '112','113','115', '116','118','119','121','122',
-                        '200', '201', '202', '203', '205', '207', '208', '209', '210', '212','213', '214','215','217',
-                        '219', '220', '221', '222', '223', '228', '230','231','232','233','234']
-    _RECORDS_MLII_V2 = ['117', '103']
-    _RECORDS_MLII_V4 = ['124']
-    _RECORDS_MLII_V5 = ['100','114','123']
-    
-    # lista dei record da utilizzare
-    ALL_RECORDS: Final[list] = _RECORDS_MLII_V1
-    
-    TRAINING_RECORDS: list = []
-    VALIDATION_RECORDS: list = []
-    TEST_RECORDS: list = []
-    
-
     _RISOLUZIONE_ADC: int = 11
     _MIN_VALUE: int = 0
     _MAX_VALUE: int = 2**_RISOLUZIONE_ADC - 1
@@ -177,6 +172,7 @@ class MITBIHDataset(Dataset):
         cls._FILES_CHEKED = False
         cls._ALL_SIGNALS_DICT.clear()
         cls._ALL_SIGNALS_BEAT_ANNOTATIONS_DICT.clear()
+        cls._ALL_SIGNALS_TAG_ANNOTATIONS_DICT.clear()
 
     @classmethod
     def initDataset(cls, path: str, sample_rate: int = 360, *, fill_and_concat_missing_channels: bool = False, random_seed: int = 42):
@@ -185,48 +181,49 @@ class MITBIHDataset(Dataset):
         Questo metodo dovrebbe essere chiamato una volta all'inizio del programma.
         """
         if cls._FILES_CHEKED and cls._DATASET_PATH == path:
-            print(f"Il percorso del dataset è già impostato su: {cls._DATASET_PATH}")
+            APP_LOGGER.info(f"Il percorso del dataset è già impostato su: {cls._DATASET_PATH}")
             return
         
         cls.__SAMPLE_RATE = sample_rate
         cls.__RANDOM_SEED = random_seed
+        cls._DATASET_PATH = path
         
         #========================================================================#
         # VERIFICO I FILES
         #========================================================================#
-        cls._DATASET_PATH = path
+        
 
         if not os.path.isdir(path):
             raise FileNotFoundError(f"La directory specificata non esiste: {path}")
-        print(f"Percorso del dataset impostato su: {cls._DATASET_PATH}")
+        APP_LOGGER.info(f"Percorso del dataset impostato su: {cls._DATASET_PATH}")
         
-        print("Verifica dei files... ", end=None)
-        for record_name in cls.ALL_RECORDS:
+        APP_LOGGER.info("Verifica dei files")
+        for record_name in cls._ALL_RECORDS:
             csv_filepath = os.path.join(MITBIHDataset._DATASET_PATH, f"{record_name}.csv")
             txt_filepath = os.path.join(MITBIHDataset._DATASET_PATH, f"{record_name}annotations.txt")
             assert os.path.exists(csv_filepath), f"file {csv_filepath} non trovato" 
             assert os.path.exists(txt_filepath), f"file {txt_filepath} non trovato" 
         
-        print("Ok")
+        APP_LOGGER.info("Completato")
         
         cls._FILES_CHEKED = True
         
         #========================================================================#
         # CARICO I DATI
         #========================================================================#
-        print("caricamneto dei dati... ", end=None)
+        APP_LOGGER.info("caricamneto dei dati ")
         cls.__load_signals(fill_and_concat_missing_channels=fill_and_concat_missing_channels)
-        print("Ok")
+        APP_LOGGER.info("Completato")
         
         #========================================================================#
         # NORMALIZZAZIONE DEI DATI
         #========================================================================#
-        print("Normalizzazione dei dati... ", end=None)
+        APP_LOGGER.info("Normalizzazione dei dati")
         min_list = []
         max_list = []
         
         #cerco i massimi e i minimi di ogni segnale
-        for record_name in cls.ALL_RECORDS:
+        for record_name in cls._ALL_RECORDS:
             signal = cls._ALL_SIGNALS_DICT[record_name]
             max_list.append(torch.max(signal).item())
             min_list.append(torch.min(signal).item())
@@ -237,13 +234,13 @@ class MITBIHDataset(Dataset):
         
         
         #normalizzo tutti i segnali
-        for record_name in cls.ALL_RECORDS:
+        for record_name in cls._ALL_RECORDS:
             signal = cls._ALL_SIGNALS_DICT[record_name]
             signal = (signal - MITBIHDataset._MIN_VALUE) / (MITBIHDataset._MAX_VALUE - MITBIHDataset._MIN_VALUE) 
             cls._ALL_SIGNALS_DICT[record_name] = signal
-        print("Ok")
-        print(f"Valore massimo trovato: {cls._MAX_VALUE}")
-        print(f"Valore minimo trovato: {cls._MIN_VALUE}")
+        APP_LOGGER.info("Completata")
+        APP_LOGGER.info(f"Valore massimo trovato: {cls._MAX_VALUE}")
+        APP_LOGGER.info(f"Valore minimo trovato: {cls._MIN_VALUE}")
         
     @classmethod
     def __load_signals(cls, fill_and_concat_missing_channels: bool = False) -> None:
@@ -257,10 +254,10 @@ class MITBIHDataset(Dataset):
             MITBIHDataset._V5_COL
         ]
         
-        progress_bar = tqdm(total=len(cls.ALL_RECORDS), desc="Caricamento Records")
+        progress_bar = tqdm(total=len(cls._ALL_RECORDS), desc="Caricamento Records")
         
         try:    
-            for record_name in cls.ALL_RECORDS:
+            for record_name in cls._ALL_RECORDS:
                 #progress_bar.display(record_name)
                 csv_filepath = os.path.join(MITBIHDataset._DATASET_PATH, f"{record_name}.csv")
                 txt_filepath = os.path.join(MITBIHDataset._DATASET_PATH, f"{record_name}annotations.txt")
@@ -281,7 +278,9 @@ class MITBIHDataset(Dataset):
                         data = torch.from_numpy(df[col].values).unsqueeze(0)
                     elif fill_and_concat_missing_channels:
                         data = torch.zeros(MITBIHDataset._MAX_SAMPLE_NUM).unsqueeze(0)
-                
+                    else:
+                        continue
+                    
                     if signal is None:
                         signal = data
                     else:
@@ -368,7 +367,8 @@ class MITBIHDataset(Dataset):
         val_ratio = 0.1
         test_ratio = 0.1
         
-        print(f"Caricamento valori per {self._mode} in modalità {self._dataMode}")
+        APP_LOGGER.info("-"*100)
+        APP_LOGGER.info(f"Caricamento valori per {self._mode} in modalità {self._dataMode}")
         match self._dataMode:
             case DatasetDataMode.BPM_REGRESSION: 
                 self._load_data_for_BPM_regression()
@@ -380,9 +380,9 @@ class MITBIHDataset(Dataset):
                 train_indices, temp_indices = train_test_split(index_list, test_size=(val_ratio + test_ratio), random_state=MITBIHDataset.__RANDOM_SEED)
                 val_indices, test_indices = train_test_split(temp_indices, test_size=(test_ratio / (val_ratio + test_ratio)), random_state=MITBIHDataset.__RANDOM_SEED)
 
-                print(f"train_indices: {len(train_indices)}")
-                print(f"val_indices: {len(val_indices)}")
-                print(f"test_indices: {len(test_indices)}")
+                APP_LOGGER.info(f"train_indices: {len(train_indices)}")
+                APP_LOGGER.info(f"val_indices: {len(val_indices)}")
+                APP_LOGGER.info(f"test_indices: {len(test_indices)}")
 
                 match self._mode:
                     case DatasetMode.TRAINING:
@@ -399,7 +399,9 @@ class MITBIHDataset(Dataset):
             case _ :
                 raise ValueError(f"Modalità per i dati non valida: {self._dataMode}")
         
-        
+    def getWeights(self) -> torch.Tensor:
+        assert self._dataMode == DatasetDataMode.BEAT_CLASSIFICATION, "I pesi sono disponibili solo per la classificazione"
+        return self._class_weights.detach().clone()
     
     def _load_data_for_BPM_regression(self):
         """Carica i dati dai record selezionati (CSV per segnale, TXT per annotazioni)."""
@@ -520,7 +522,7 @@ class MITBIHDataset(Dataset):
                                     
                         # Se il tipo di battito non è valido, ignora
                         case _:
-                            print(f"Annotazione ignorata: {beat_type}.")
+                            APP_LOGGER.warning(f"Annotazione ignorata: {beat_type}.")
                             continue
 
                 #========================================================================#
@@ -541,7 +543,7 @@ class MITBIHDataset(Dataset):
                         else:
                             bpm = 0
                     elif len(beat_times) == 1:
-                        print(f"Finestra con un solo BPM in {current_window['record_name']}")
+                        APP_LOGGER.info(f"Finestra con un solo BPM in {current_window['record_name']}")
                         bpm = 0  # Solo un beat, impossibile calcolare BPM
                     else:
                         bpm = 0  # Nessun beat nella finestra
@@ -580,7 +582,7 @@ class MITBIHDataset(Dataset):
             # SOVRACAMPIONAMENTO
             #========================================================================# 
             
-            print("\nApplying oversampling...")
+            APP_LOGGER.info("Applying oversampling...")
             # 1. Trova il valore di BPM più frequente
             # Using BPM_value which counts occurrences of each BPM
             most_common_bpm_val = 0
@@ -590,7 +592,7 @@ class MITBIHDataset(Dataset):
                     max_count = count
                     most_common_bpm_val = bpm_key
 
-            print(f"Most frequent BPM value: {most_common_bpm_val} with {max_count} occurrences.")
+            APP_LOGGER.info(f"Most frequent BPM value: {most_common_bpm_val} with {max_count} occurrences.")
 
             # 2. Determina la quantità di finestre da replicare per bilanciare
             # We aim to bring other classes closer to the most_common_bpm_val count.
@@ -613,7 +615,7 @@ class MITBIHDataset(Dataset):
                 current_count = len(windows_list)
                 if current_count < target_count_for_oversampling:
                     num_to_replicate = target_count_for_oversampling - current_count
-                    print(f"Oversampling BPM {bpm_key}: replicating {num_to_replicate} windows (current: {current_count})")
+                    APP_LOGGER.info(f"Oversampling BPM {bpm_key}: replicating {num_to_replicate} windows (current: {current_count})")
                     # Randomly sample with replacement from the current windows_list
                     replicated_windows = random.choices(windows_list, k=num_to_replicate)
                     oversampled_windows.extend(windows_list)
@@ -631,7 +633,7 @@ class MITBIHDataset(Dataset):
             #     print(f"{i} -> {BPM_value[i]}")
                 
                 
-            print(f"Total windows after oversampling: {len(self._windows)}")
+            APP_LOGGER.info(f"Total windows after oversampling: {len(self._windows)}")
         
             # #========================================================================#
             # # CACOLO DEI PESI
@@ -681,7 +683,7 @@ class MITBIHDataset(Dataset):
 
           
         except Exception as e:
-            print(f"Errore durante il caricamento dei dati per il record {current_record_name}: {e}")
+            APP_LOGGER.error(f"Errore durante il caricamento dei dati per il record {current_record_name}: {e}")
             raise e
             
     
@@ -692,19 +694,26 @@ class MITBIHDataset(Dataset):
         idx: int = 0
         counter: int = 0
         window_counter: int = 0
+        done: bool = False
         
         progress_bar = tqdm(total=len(indices))
         
         try:
-            for record_name in MITBIHDataset.ALL_RECORDS:
+            for record_name in MITBIHDataset._ALL_RECORDS:
+                
+                if done:
+                    break
+                
                 signal = MITBIHDataset._ALL_SIGNALS_DICT[record_name]
                 annotations = MITBIHDataset._ALL_SIGNALS_BEAT_ANNOTATIONS_DICT[record_name]
+                
                 
                 for annotation in annotations:
                     
                     #se ho preso tutti gli elementi
                     if idx >= len(indices):
-                        return
+                        done=True
+                        break
                     
                     #se non ho ancora raggiugnto l'indice dell'elemento da utilizzare
                     elif indices[idx] > counter:
@@ -762,11 +771,38 @@ class MITBIHDataset(Dataset):
                     self._windows[window_counter] = {
                         'signal_fragment' : signal_fragment,
                         'beatType': beat_type,
+                        'class' : torch.tensor([SampleType.mapBeatToNumber(beat_type)], dtype=torch.int32),
                         'record_name': record_name,
                     }
                     window_counter += 1
+                
         finally:
-            progress_bar.close()       
+            progress_bar.close()  
+            
+          
+        # Calcolo dei pesi delle classi
+        if self._mode == DatasetMode.TRAINING:
+            APP_LOGGER.info("Calcolo dei pesi")
+            classes_number: Dict[int, int] = {}
+            
+            all_classes = [self._windows[i]['class'].item() for i in self._windows]
+            all_classes = sorted(all_classes)
+            
+            for n in all_classes:
+                if classes_number.get(n) is None:
+                    classes_number[n] = 1
+                else:
+                    classes_number[n] += 1
+                    
+            for k, v in classes_number.items():
+                p = v/len(all_classes) * 100
+                APP_LOGGER.info(f"Classe {k} ({p:.4f}%): {v}")
+            
+            unique_classes = np.unique(all_classes)
+            class_weights = compute_class_weight(class_weight='balanced', classes=unique_classes, y=all_classes)
+            self._class_weights = torch.tensor(class_weights, dtype=torch.float32)
+            APP_LOGGER.info(f"Pesi delle classi calcolati:\n{self._class_weights}")
+        
 
     @classmethod    
     def _formatTime(cls, time: str) -> float:        
@@ -795,12 +831,9 @@ class MITBIHDataset(Dataset):
 
     def __getitem__(self, idx: int) -> Tuple[torch.Tensor, torch.Tensor]:
         
-
-        
-        
         if self._dataMode is DatasetDataMode.BEAT_CLASSIFICATION:
             window_data = self._windows[idx]
-            return window_data['signal_fragment'], SampleType.mapBeatToNumber(window_data['beatType'])
+            return window_data['signal_fragment'], window_data['class']
         
         elif self._dataMode is DatasetDataMode.BPM_REGRESSION: 
             window_data = self._windows[idx]
@@ -808,6 +841,10 @@ class MITBIHDataset(Dataset):
 
         else:
             raise ValueError(f"Modalità {self._dataMode} non valida") 
+
+
+    
+
 
     def plot_windows(self, idx: int, asfile: bool = False, save: bool = False) -> Image.Image | None:
         """
@@ -864,13 +901,99 @@ class MITBIHDataset(Dataset):
         if save:
             plt.savefig(output_filepath)
             plt.close()
-        else:
+
+    def plot_record_with_annotations(self, record_name: str, output_filepath: str, seconds_per_row: int = 10):
+        """
+        Visualizza il segnale di un record con tutte le annotazioni dei battiti e dei tag,
+        generando un grafico per ogni sequenza di secondi e unendoli in un unico file.
+
+        Args:
+            record_name (str): Il nome del record da visualizzare (es. '100').
+            output_filepath (str): Il percorso completo dove salvare l'immagine del grafico finale.
+            seconds_per_row (int): Quanti secondi visualizzare su ogni riga del grafico.
+        """
+        if record_name not in MITBIHDataset._ALL_RECORDS:
+            APP_LOGGER.error(f"Record '{record_name}' non trovato nel dataset.")
+            return
+
+        signal = MITBIHDataset._ALL_SIGNALS_DICT[record_name]
+        beat_annotations = MITBIHDataset._ALL_SIGNALS_BEAT_ANNOTATIONS_DICT[record_name]
+        tag_annotations = MITBIHDataset._ALL_SIGNALS_TAG_ANNOTATIONS_DICT[record_name]
+        sample_rate = MITBIHDataset.__SAMPLE_RATE
+
+        if signal is None or sample_rate is None:
+            APP_LOGGER.error(f"Dati del segnale o sample rate non disponibili per il record '{record_name}'.")
+            return
+
+        samples_per_row = seconds_per_row * sample_rate
+        total_samples = signal.shape[1]
+        num_rows = int(np.ceil(total_samples / samples_per_row))
+
+        row_images = []
+        output_dir = os.path.dirname(output_filepath)
+        if output_dir and not os.path.exists(output_dir):
+            os.makedirs(output_dir)
+            APP_LOGGER.info(f"Creata directory per il salvataggio del grafico: {output_dir}")
+
+        APP_LOGGER.info(f"Generazione del grafico per il record '{record_name}' ({num_rows} righe)...")
+        for i in tqdm(range(num_rows), desc=f"Plotting record {record_name}"):
+            start_sample = i * samples_per_row
+            end_sample = min((i + 1) * samples_per_row, total_samples)
+            
+            current_segment_signal = signal[:, start_sample:end_sample]
+            x_values = np.arange(start_sample, end_sample)
+
+            plt.figure(figsize=(max(12, 2*seconds_per_row), 4))
+            plt.plot(x_values, current_segment_signal[0].numpy(), label='Segnale ECG MLII')
+            if current_segment_signal.shape[0] > 1: # Plot V1 if available
+                plt.plot(x_values, current_segment_signal[1].numpy(), label='Segnale ECG V1')
+            
+            plt.title(f"Record {record_name} - Sezione {i+1}/{num_rows} (Campioni {start_sample}-{end_sample})")
+            plt.xlabel("Campioni")
+            plt.ylabel("Ampiezza normalizzata")
+            plt.legend()
+            plt.grid()
+            plt.ylim(0, 1) # Assicurati che l'asse Y sia normalizzato
+
+            # Aggiungi annotazioni dei battiti
+            for ann in beat_annotations:
+                sample_pos = ann["sample_pos"]
+                beat_type = ann["annotation"]
+                if start_sample <= sample_pos < end_sample:
+                    plt.axvline(x=sample_pos, color='red', linestyle='--', linewidth=0.8)
+                    plt.text(sample_pos, 0.95, str(beat_type.value), color='red', rotation=90, fontsize=8, ha='center', va='top')
+
+            # Aggiungi annotazioni dei tag
+            for ann in tag_annotations:
+                sample_pos = ann["sample_pos"]
+                tag_type = ann["annotation"]
+                if start_sample <= sample_pos < end_sample:
+                    plt.axvline(x=sample_pos, color='blue', linestyle=':', linewidth=0.8)
+                    plt.text(sample_pos, 0.90, str(tag_type.value), color='blue', rotation=0, fontsize=8, ha='center', va='bottom')
+
             buf = io.BytesIO()
             plt.savefig(buf, format='png')
             plt.close()
             buf.seek(0)
-            img = Image.open(buf)
-            return img
+            row_images.append(Image.open(buf).convert("RGB"))
+
+        if not row_images:
+            APP_LOGGER.info(f"Nessuna immagine generata per il record {record_name}.")
+            return
+
+        # Concatena tutte le immagini delle righe
+        widths, heights = zip(*(img.size for img in row_images))
+        max_width = max(widths)
+        total_height = sum(heights)
+
+        concatenated_img = Image.new('RGB', (max_width, total_height))
+        y_offset = 0
+        for img in row_images:
+            concatenated_img.paste(img, (0, y_offset))
+            y_offset += img.size[1]
+
+        concatenated_img.save(output_filepath)
+        APP_LOGGER.info(f"Grafico completo del record '{record_name}' salvato in: {output_filepath}")
       
        
     def plot_all_windows_for_record(self, record_name: str, output_dir:str):
@@ -878,13 +1001,13 @@ class MITBIHDataset(Dataset):
         Plotta tutte le finestre di un record in modo continuo.
         """
         if record_name not in self._record_windows:
-            print(f"Record {record_name} non trovato in self._file_windows.")
+            APP_LOGGER.info(f"Record {record_name} non trovato in self._file_windows.")
             return
 
         windows = self._record_windows[record_name]
         num_windows = len(windows)
         if num_windows == 0:
-            print(f"Nessuna finestra trovata per il record {record_name}.")
+            APP_LOGGER.info(f"Nessuna finestra trovata per il record {record_name}.")
             return
 
         #output_dir = os.path.join(MITBIHDataset._DATASET_PATH, "plots")
@@ -903,7 +1026,7 @@ class MITBIHDataset(Dataset):
                 window_imgs.append(img.convert("RGB"))
 
         if not window_imgs:
-            print(f"Nessuna immagine generata per le finestre di {record_name}.")
+            APP_LOGGER.info(f"Nessuna immagine generata per le finestre di {record_name}.")
             return
 
         # Calcola la larghezza massima e l'altezza totale
@@ -919,7 +1042,7 @@ class MITBIHDataset(Dataset):
             y_offset += img.size[1]
 
         concatenated_img.save(output_filepath)
-        print(f"Immagine concatenata salvata in: {output_filepath}")
+        APP_LOGGER.info(f"Immagine concatenata salvata in: {output_filepath}")
         
         
         # plt.savefig(output_filepath)
@@ -938,7 +1061,7 @@ class MITBIHDataset(Dataset):
             output_filepath (str): Il percorso completo dove salvare l'immagine del grafico.
         """
         if not self._windows:
-            print(f"Nessuna finestra caricata per la modalità {self._mode.name}.")
+            APP_LOGGER.info(f"Nessuna finestra caricata per la modalità {self._mode.name}.")
             return
 
         all_bpms = []
@@ -956,7 +1079,7 @@ class MITBIHDataset(Dataset):
 
 
         if not all_bpms:
-            print("Nessun valore di BPM trovato.")
+            APP_LOGGER.info("Nessun valore di BPM trovato.")
             return
 
         all_bpms_np = np.array(all_bpms)
@@ -1057,13 +1180,71 @@ class MITBIHDataset(Dataset):
         output_dir = os.path.dirname(output_filepath)
         if output_dir and not os.path.exists(output_dir):
             os.makedirs(output_dir)
-            print(f"Creata directory: {output_dir}")
+            APP_LOGGER.info(f"Creata directory: {output_dir}")
 
         # Salva il grafico
         plt.savefig(output_filepath)
         plt.close(fig) # Chiudi la figura per liberare memoria
 
 
-        print(f"Diagramma della distribuzione dei BPM con elenco file salvato in: {output_filepath}")
+        APP_LOGGER.info(f"Diagramma della distribuzione dei BPM con elenco file salvato in: {output_filepath}")
 
+    def plot_class_distribution(self, save_path: str | None = None, show_plot: bool = False):
+        """
+        Realizza e salva/visualizza un diagramma della distribuzione delle classi
+        per la modalità "beat classification".
 
+        Args:
+            save_path (str, optional): Il percorso completo dove salvare l'immagine del grafico.
+                                       Se None, il grafico non viene salvato.
+            show_plot (bool): Se True, il grafico viene visualizzato.
+        """
+        if self._dataMode != DatasetDataMode.BEAT_CLASSIFICATION:
+            APP_LOGGER.warning("La distribuzione delle classi è rilevante solo per la modalità 'beat classification'.")
+            return
+
+        if not self._windows:
+            APP_LOGGER.info("Nessuna finestra caricata per la modalità 'beat classification'.")
+            return
+
+        all_classes = [self._windows[i]['class'].item() for i in self._windows]
+        
+        # Conta le occorrenze di ogni classe
+        class_counts = pd.Series(all_classes).value_counts().sort_index()
+
+        # Mappa i numeri delle classi ai loro nomi leggibili
+        class_labels = {
+            0: "Normal (N, L, R, B, |)",
+            1: "SVEB (A, a, J, j, S)",
+            2: "VEB (V, E, e)",
+            3: "Fusion (F, f)",
+            4: "Ventricular Flutter Wave (!)",
+            5: "Paced Beat (/)",
+            6: "Unknown Beat (Q)"
+        }
+        
+        # Prepara i dati per il plot
+        labels = [class_labels.get(c, f"Classe {c}") for c in class_counts.index]
+        counts = class_counts.values
+
+        plt.figure(figsize=(10, 6))
+        plt.bar(labels, counts, color='skyblue')
+        plt.xlabel("Classe di Battito")
+        plt.ylabel("Frequenza")
+        plt.title("Distribuzione delle Classi di Battito")
+        plt.xticks(rotation=45, ha='right')
+        plt.grid(axis='y', linestyle='--', alpha=0.7)
+        plt.tight_layout()
+
+        if save_path:
+            output_dir = os.path.dirname(save_path)
+            if output_dir and not os.path.exists(output_dir):
+                os.makedirs(output_dir)
+                APP_LOGGER.info(f"Creata directory per il salvataggio del grafico: {output_dir}")
+            plt.savefig(save_path)
+            APP_LOGGER.info(f"Grafico della distribuzione delle classi salvato in: {save_path}")
+        
+        if show_plot:
+            plt.show()
+        
+        plt.close()

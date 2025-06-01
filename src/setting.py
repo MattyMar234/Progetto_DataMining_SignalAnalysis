@@ -1,7 +1,12 @@
+import logging
 from logging import Logger
 from typing import Final
 from pathlib import Path
 import os
+from colorama import Fore, Style, init
+
+# Initialize colorama for Windows compatibility
+init(autoreset=True)
 
 #============================ PATHS ============================#
 APP_FOLDER: Final[str] = str(Path(__file__).parent.absolute().parent.absolute())
@@ -12,7 +17,7 @@ OUTPUT_PATH: Final[str] = os.path.join(DATA_FOLDER_PATH, 'Models')
 
 if not os.path.exists(DATA_FOLDER_PATH):
     os.makedirs(DATA_FOLDER_PATH)
-    
+
 if not os.path.exists(OUTPUT_PATH):
     os.makedirs(OUTPUT_PATH)
 
@@ -45,7 +50,69 @@ LOGGERS_CONFIG_FILE: Final[str] = os.path.join(DATA_FOLDER_PATH, 'loggerConfig.j
 if not os.path.exists(LOGS_FOLDER):
     os.makedirs(LOGS_FOLDER)
 
-APP_LOGGER: Logger | None = None
+APP_LOGGER: Logger | None = None # Will be initialized below
 
 APP_LOGGER_NAME: Final[str] = 'appInfo'
 CONSOLE_LOGGER_NAME: Final[str] = 'console'
+
+class ColoredFormatter(logging.Formatter):
+    """
+    Custom formatter to add color to log messages based on their level.
+    """
+    FORMAT = "[%(asctime)s] [%(levelname)s] %(message)s"
+    DATE_FORMAT = "%Y-%m-%d %H:%M:%S"
+
+    LOG_COLORS = {
+        logging.DEBUG: Fore.CYAN,
+        logging.INFO: Fore.GREEN,
+        logging.WARNING: Fore.YELLOW,
+        logging.ERROR: Fore.RED,
+        logging.CRITICAL: Fore.RED + Style.BRIGHT,
+    }
+
+    def format(self, record):
+        # Get the original formatted message without color
+        original_message = super().format(record)
+        
+        # Get the color for the current log level
+        color_code = self.LOG_COLORS.get(record.levelno, Fore.WHITE)
+        
+        # Find the start and end of the levelname in the original message
+        # This assumes the format is consistent: "[timestamp] [levelname] message"
+        level_name_start = original_message.find(f"[{record.levelname}]")
+        
+        if level_name_start != -1:
+            # Extract parts of the message
+            before_level = original_message[:level_name_start + 1] # Include '['
+            level_name_part = record.levelname
+            after_level = original_message[level_name_start + 1 + len(record.levelname):] # Exclude ']'
+            
+            # Reconstruct the message with only the levelname colored
+            colored_message = f"{before_level}{color_code}{level_name_part}{Style.RESET_ALL}{after_level}"
+            return colored_message
+        else:
+            # Fallback if levelname not found as expected (shouldn't happen with default format)
+            return color_code + original_message + Style.RESET_ALL
+
+# Configure the application logger
+def setup_logger() -> Logger:
+    logger = logging.getLogger(APP_LOGGER_NAME)
+    logger.setLevel(logging.INFO) # Set the default logging level
+
+    # Prevent adding multiple handlers if the logger is re-initialized
+    if not logger.handlers:
+        # Console handler with colored output
+        console_handler = logging.StreamHandler()
+        console_formatter = ColoredFormatter(fmt=ColoredFormatter.FORMAT, datefmt=ColoredFormatter.DATE_FORMAT)
+        console_handler.setFormatter(console_formatter)
+        logger.addHandler(console_handler)
+
+        # File handler for persistent logs (without color codes)
+        file_handler = logging.FileHandler(os.path.join(LOGS_FOLDER, f'{APP_LOGGER_NAME}.log'))
+        file_formatter = logging.Formatter(fmt="[%(asctime)s] [%(levelname)s] %(message)s", datefmt="%Y-%m-%d %H:%M:%S")
+        file_handler.setFormatter(file_formatter)
+        logger.addHandler(file_handler)
+
+    return logger
+
+APP_LOGGER = setup_logger()

@@ -1,6 +1,11 @@
-import os
+from matplotlib import pyplot as plt
 import pytorch_lightning as pl
+from PIL import Image
 import torch
+import io
+import os
+
+from tqdm import tqdm
 
 from dataset.dataset import MITBIHDataset, DatasetMode, DatasetDataMode
 from torch.utils.data import DataLoader
@@ -32,6 +37,7 @@ class Mitbih_datamodule(pl.LightningDataModule):
         self._num_workers = num_workers
         self._sample_per_window = sample_per_window
         self._sample_per_stride = sample_per_stride
+        self._sample_rate = sample_rate
         self._datasetDataMode = datasetDataMode
         
         self._prefetch_factor: int | None = 1
@@ -48,6 +54,76 @@ class Mitbih_datamodule(pl.LightningDataModule):
         self._TRAINING_DATASET = MITBIHDataset(dataMode=self._datasetDataMode, mode=DatasetMode.TRAINING, sample_per_window=sample_per_window, sample_per_stride=sample_per_stride)
         self._VALIDATION_DATASET = MITBIHDataset(dataMode=self._datasetDataMode, mode=DatasetMode.VALIDATION, sample_per_window=sample_per_window, sample_per_stride=sample_per_stride)
         self._TEST_DATASET = MITBIHDataset(dataMode=self._datasetDataMode, mode=DatasetMode.TEST, sample_per_window=sample_per_window, sample_per_stride=sample_per_stride)
+    
+    def print_all_window(self, columNumber: int, save_path: str, dataset: MITBIHDataset) -> None:
+        
+        os.makedirs(save_path, exist_ok=True)
+        window_imgs = []
+
+        for i in tqdm(range(len(dataset)), desc=f"Plotting windows"):
+            img = self.print_window(save_path="", dataset=dataset, index=i, show_plot= False, getFile=True)
+            if img is not None:
+                window_imgs.append(img.convert("RGB"))
+
+        if not window_imgs:
+            print(f"Nessuna immagine generata")
+            return
+
+        # Calcola la larghezza massima e l'altezza totale
+        widths, heights = zip(*(img.size for img in window_imgs))
+        max_width = max(widths)
+        total_height = sum(heights)
+
+        # Crea una nuova immagine vuota per concatenare tutte le finestre
+        concatenated_img = Image.new('RGB', (max_width, total_height))
+        y_offset = 0
+        for img in window_imgs:
+            concatenated_img.paste(img, (0, y_offset))
+            y_offset += img.size[1]
+
+        concatenated_img.save(save_path)
+        print(f"Immagine concatenata salvata in: {save_path}")
+        
+    
+    
+    def print_window(self, save_path: str, dataset: MITBIHDataset, index: int, show_plot: bool = False, getFile: bool = False) -> Image.Image | None:
+        assert isinstance(dataset, MITBIHDataset)
+        #assert os.path.exists(save_path)
+        
+        window_data = dataset.get(index)
+        
+        if self._datasetDataMode == DatasetDataMode.BEAT_CLASSIFICATION:
+            signal = window_data['signal_fragment']
+            label = window_data['beatType']
+            label_str = f"Beat Type: {label}"
+        
+        time = torch.arange(signal.shape[1]) / self._sample_rate
+        
+        plt.figure(figsize=(12, 6))
+        plt.title(label_str)
+        plt.plot(time.numpy(), signal[0].numpy())
+        plt.plot(time.numpy(), signal[1].numpy())
+        plt.grid(True)
+        plt.tight_layout()
+        
+        if save_path:
+            if getFile:
+                buf = io.BytesIO()
+                plt.savefig(buf, format='png')
+                plt.close()
+                buf.seek(0)
+                img = Image.open(buf)
+                return img
+            else:
+                # Assicurati che la directory esista
+                os.makedirs(os.path.dirname(save_path), exist_ok=True)
+                plt.savefig(save_path)
+                print(f"Plot salvato in: {save_path}")
+
+        if show_plot:
+            plt.show()
+        else:
+            plt.close() # Chiudi la figura se non deve essere mostrata
     
     def print_all_training_ecg_signals(self, output_folder: str) -> None:
         os.makedirs(output_folder, exist_ok=True)

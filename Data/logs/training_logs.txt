@@ -264,3 +264,38 @@ Epoch, lr, Train_Loss, Train_MAE, Train_RMSE, Val_Loss, Val_MAE, Val_RMSE
 7, [0.001], 0.091238, 0.059648, 0.302056, 2.651672, 0.248572, 1.628395
 8, [0.001], 0.081348, 0.056416, 0.285216, 2.283226, 0.232414, 1.511035
 9, [0.001], 0.073236, 0.052482, 0.270622, 2.164100, 0.201703, 1.471088
+
+================================================================================
+Epoch, lr, Train_Loss, Val_Loss, Accuracy, F1_Macro, Precision_Macro, Recall_Macro
+
+================================================================================
+Epoch, lr, Train_Loss, Val_Loss, Accuracy, F1_Macro, Precision_Macro, Recall_Macro
+
+================================================================================
+Epoch, lr, Train_Loss, Val_Loss, Accuracy, F1_Macro, Precision_Macro, Recall_Macro
+
+================================================================================
+Epoch, lr, Train_Loss, Val_Loss, Accuracy, F1_Macro, Precision_Macro, Recall_Macro
+
+================================================================================
+Epoch, lr, Train_Loss, Val_Loss, Accuracy, F1_Macro, Precision_Macro, Recall_Macro
+
+================================================================================
+Epoch, lr, Train_Loss, Val_Loss, Accuracy, F1_Macro, Precision_Macro, Recall_Macro
+
+================================================================================
+Epoch, lr, Train_Loss, Val_Loss, Accuracy, F1_Macro, Precision_Macro, Recall_Macro
+
+================================================================================
+Epoch, lr, Train_Loss, Val_Loss, Accuracy, F1_Macro, Precision_Macro, Recall_Macro
+
+================================================================================
+Epoch, lr, Train_Loss, Val_Loss, Accuracy, F1_Macro, Precision_Macro, Recall_Macro
+
+================================================================================
+Epoch, lr, Train_Loss, Val_Loss, Accuracy, F1_Macro, Precision_Macro, Recall_Macro
+1, 0.001000, 0.462680, 0.291081, 0.908554, 0.700261, 0.630315, 0.700261
+2, 0.001000, 0.206398, 0.163323, 0.960276, 0.838264, 0.778255, 0.838264
+3, 0.001000, 0.140129, 0.139072, 0.979729, 0.918974, 0.888168, 0.918974
+4, 0.001000, 0.111760, 0.153632, 0.946005, 0.868915, 0.826700, 0.868915
+5, 0.001000, 0.091454, 0.130449, 0.977366, 0.894884, 0.858350, 0.894884
