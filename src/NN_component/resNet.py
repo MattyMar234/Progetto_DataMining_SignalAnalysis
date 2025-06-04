@@ -8,17 +8,17 @@ class BasicBlock1D(nn.Module):
     """
     Blocco residuo fondamentale per input 1D (segnali).
     """
+    
     expansion = 1
 
     def __init__(self, in_channels, out_channels, stride=1, downsample=None):
         super(BasicBlock1D, self).__init__()
-        # Convoluzioni 1D
-        self.conv1 = nn.Conv1d(in_channels, out_channels, kernel_size=3, stride=stride, padding=1, bias=False)
-        self.bn1 = nn.BatchNorm1d(out_channels)
-        self.relu = nn.ReLU(inplace=True)
-        self.conv2 = nn.Conv1d(out_channels, out_channels * self.expansion, kernel_size=3, stride=1, padding=1, bias=False)
-        self.bn2 = nn.BatchNorm1d(out_channels * self.expansion)
         self.downsample = downsample
+        self.conv1 = nn.Conv1d(in_channels, out_channels, kernel_size=3, stride=stride, padding=1, bias=False)
+        self.conv2 = nn.Conv1d(out_channels, out_channels, kernel_size=3, stride=1, padding=1, bias=False)
+        self.bn1 = nn.BatchNorm1d(out_channels)
+        self.bn2 = nn.BatchNorm1d(out_channels)
+        self.relu = nn.ReLU(inplace=True)
 
     def forward(self, x):
         identity = x
@@ -26,7 +26,6 @@ class BasicBlock1D(nn.Module):
         out = self.conv1(x)
         out = self.bn1(out)
         out = self.relu(out)
-
         out = self.conv2(out)
         out = self.bn2(out)
 
@@ -35,7 +34,6 @@ class BasicBlock1D(nn.Module):
 
         out += identity
         out = self.relu(out)
-
         return out
 
 # Definizione della ResNet per input 1D
@@ -43,7 +41,7 @@ class ResNet1D(nn.Module):
     """
     Implementazione della ResNet adattata per input 1D (segnali).
     """
-    def __init__(self, in_channels_signal=1, classes_output_dim=1, categories_output_dim=1):
+    def __init__(self, in_channels_signal:int = 1, classes_output_dim: int = 1, categories_output_dim: int = 1):
         super(ResNet1D, self).__init__()
         self.in_channels = 64 
 
@@ -51,20 +49,18 @@ class ResNet1D(nn.Module):
         self.conv1 = nn.Conv1d(in_channels_signal, 64, kernel_size=7, stride=2, padding=3, bias=False)
         self.bn1 = nn.BatchNorm1d(64)
         self.relu = nn.ReLU(inplace=True)
-        # Max Pooling 1D
         self.maxpool = nn.MaxPool1d(kernel_size=3, stride=2, padding=1)
 
         # Strati convoluzionali 1D con blocchi residui
-        self.layer1 = self._make_layer(BasicBlock1D, 64, 2, stride=1)
-        self.layer2 = self._make_layer(BasicBlock1D, 128, 2, stride=2)
-        self.layer3 = self._make_layer(BasicBlock1D, 256, 2, stride=2)
-        self.layer4 = self._make_layer(BasicBlock1D, 512, 2, stride=2)
+        self.layer1 = self._make_layer(64, 3, stride=1)
+        self.layer2 = self._make_layer(128, 4, stride=2)
+        self.layer3 = self._make_layer(256, 6, stride=2)
+        self.layer4 = self._make_layer(512, 3, stride=2)
 
-        # Global Average Pooling 1D
+
         self.avgpool = nn.AdaptiveAvgPool1d(1)
-        # Strato fully connected finale per regressione
-        self.fc1 = nn.Linear(512 * BasicBlock1D.expansion, classes_output_dim)
-        self.fc2 = nn.Linear(512 * BasicBlock1D.expansion, categories_output_dim)
+        self.fc1_classes    = nn.Linear(512 * BasicBlock1D.expansion, classes_output_dim)
+        self.fc2_categories = nn.Linear(512 * BasicBlock1D.expansion, categories_output_dim)
 
         # Inizializzazione dei pesi
         for m in self.modules():
@@ -75,20 +71,20 @@ class ResNet1D(nn.Module):
                 nn.init.constant_(m.bias, 0)
                 
                 
-    def _make_layer(self, block, out_channels, blocks, stride):
+    def _make_layer(self, out_channels: int, blocks: int, stride: int | tuple):
         downsample = None
-        if stride != 1 or self.in_channels != out_channels * block.expansion:
+        if stride != 1 or self.in_channels != out_channels * BasicBlock1D.expansion:
             downsample = nn.Sequential(
-                nn.Conv1d(self.in_channels, out_channels * block.expansion, kernel_size=1, stride=stride, bias=False),
-                nn.BatchNorm1d(out_channels * block.expansion),
+                nn.Conv1d(self.in_channels, out_channels * BasicBlock1D.expansion, kernel_size=1, stride=stride, bias=False),
+                nn.BatchNorm1d(out_channels * BasicBlock1D.expansion),
             )
 
         layers = []
-        layers.append(block(self.in_channels, out_channels, stride, downsample))
-        self.in_channels = out_channels * block.expansion
+        layers.append(BasicBlock1D(self.in_channels, out_channels, stride, downsample))
+        self.in_channels = out_channels * BasicBlock1D.expansion
 
         for _ in range(1, blocks):
-            layers.append(block(self.in_channels, out_channels))
+            layers.append(BasicBlock1D(self.in_channels, out_channels))
 
         return nn.Sequential(*layers)
 
@@ -105,7 +101,7 @@ class ResNet1D(nn.Module):
         
         x = self.avgpool(x)
         x = torch.flatten(x, 1)
-        x1 = self.fc1(x)
-        x2 = self.fc2(x)
+        x1 = self.fc1_classes(x)
+        x2 = self.fc2_categories(x)
 
         return x1, x2

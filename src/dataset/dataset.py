@@ -29,7 +29,7 @@ class DatasetDataMode(Enum):
     BPM_REGRESSION = auto()
 
 #https://archive.physionet.org/physiobank/database/html/mitdbdir/intro.htm#leads
-class SampleType(Enum):
+class BeatType(Enum):
     
     #Normal e battiti di conduzione normale
     NORMAL_BEAT = "N",1, "Normal beat"
@@ -52,13 +52,14 @@ class SampleType(Enum):
     
     #Fusion beats
     FUSION_OF_VENTRICULAR_AND_NORMAL_BEAT = "F", 12, "Fusion of ventricular and normal beat"
-    FUSION_OF_PACED_AND_NORMAL_BEAT = "f", 12, "Fusion of paced and normal beat"
+    FUSION_OF_PACED_AND_NORMAL_BEAT = "f", 13, "Fusion of paced and normal beat"
    
-    #ignore or unknow
+    #others
+    VENTRICULAR_FLUTTER_WAVE = "!", 14, "Ventricular flutter wave"
+    PACED_BEAT_SLASH = "/", 15, "Paced beat"
+    PACED_BEAT_P = "P", 15, "Paced beat"
     ISOLATED_QRS_LIKE_ARTIFACT = "|", 0, "Isolated QRS-like artifact"
-    VENTRICULAR_FLUTTER_WAVE = "!", 13, "Ventricular flutter wave"
-    UNKNOWN_BEAT_Q = "Q", 0, "Unclassifiable beat"
-    PACED_BEAT = "/", 0, "Paced beat"
+    UNKNOWN_BEAT_Q = "Q", 0, "Unknown beat"
   
     #ANNOTATION
     CHANGE_IN_SIGNAL_QUALITY = "~", -1, "?"
@@ -67,6 +68,8 @@ class SampleType(Enum):
     END_NOISE = "]", -1, "?"
     START_SEG_PLUS = "+", -1, "?"
     COMMENT = "\"", -1, "?"
+    
+
     
     def __str__(self):
         return self.value[0]
@@ -77,7 +80,7 @@ class SampleType(Enum):
         return list(map(lambda c: c.value, cls))
     
     @classmethod
-    def tokenize(cls, type: str) -> 'SampleType':
+    def tokenize(cls, type: str) -> 'BeatType':
         if not isinstance(type, str) or len(type) == 0:
             raise ValueError(f"Tipo di battito non valido: {type}")
 
@@ -89,7 +92,7 @@ class SampleType(Enum):
         raise ValueError(f"Tipo di battito sconosciuto: {type_char}. Non può essere convertito in SampleType.")
     
     @classmethod  
-    def isBeat(cls, annotation: 'SampleType') -> bool:
+    def isBeat(cls, annotation: 'BeatType') -> bool:
         return annotation in {
             cls.NORMAL_BEAT, cls.LEFT_BUNDLE_BRANCH_BLOCK_BEAT, cls.RIGHT_BUNDLE_BRANCH_BLOCK_BEAT,
             cls.LEFT_OR_RIGHT_BUNDLE_BRANCH_BLOCK_BEAT, cls.ISOLATED_QRS_LIKE_ARTIFACT,
@@ -98,33 +101,52 @@ class SampleType(Enum):
             cls.SUPRAVENTRICULAR_PREMATURE_BEAT, cls.PREMATURE_VENTRICULAR_CONTRACTION,
             cls.VENTRICULAR_ESCAPE_BEAT, cls.ATRIAL_ESCAPE_BEAT,
             cls.FUSION_OF_VENTRICULAR_AND_NORMAL_BEAT, cls.FUSION_OF_PACED_AND_NORMAL_BEAT,
-            cls.VENTRICULAR_FLUTTER_WAVE, cls.UNKNOWN_BEAT_Q, cls.PACED_BEAT
+            cls.VENTRICULAR_FLUTTER_WAVE, cls.UNKNOWN_BEAT_Q, cls.PACED_BEAT_SLASH
         }
     
     @classmethod
-    def isTag(cls, annotation: 'SampleType') -> bool:
+    def isTag(cls, annotation: 'BeatType') -> bool:
         return annotation in {
             cls.CHANGE_IN_SIGNAL_QUALITY, cls.NOISE, cls.START_NOISE,
             cls.END_NOISE, cls.START_SEG_PLUS, cls.COMMENT
         }
         
     @classmethod
-    def getBeatCategory(cls, beat: 'SampleType') -> int:
+    def getBeatCategory(cls, beat: 'BeatType') -> int:
         match beat:
-            case cls.NORMAL_BEAT | cls.LEFT_BUNDLE_BRANCH_BLOCK_BEAT | cls.RIGHT_BUNDLE_BRANCH_BLOCK_BEAT | cls.LEFT_OR_RIGHT_BUNDLE_BRANCH_BLOCK_BEAT | cls.ISOLATED_QRS_LIKE_ARTIFACT:
+            
+            #N
+            case cls.NORMAL_BEAT | \
+                 cls.LEFT_BUNDLE_BRANCH_BLOCK_BEAT | \
+                 cls.RIGHT_BUNDLE_BRANCH_BLOCK_BEAT | \
+                 cls.ATRIAL_ESCAPE_BEAT | \
+                 cls.NODAL_JUNCTIONAL_ESCAPE_BEAT:
                 return 0
-            case cls.ATRIAL_PREMATURE_BEAT | cls.ABERRATED_ATRIAL_PREMATURE_BEAT | cls.NODAL_JUNCTIONAL_PREMATURE_BEAT | cls.NODAL_JUNCTIONAL_ESCAPE_BEAT | cls.SUPRAVENTRICULAR_PREMATURE_BEAT:
+            
+            #SVEB
+            case cls.ATRIAL_PREMATURE_BEAT | \
+                 cls.ABERRATED_ATRIAL_PREMATURE_BEAT | \
+                 cls.NODAL_JUNCTIONAL_PREMATURE_BEAT | \
+                 cls.SUPRAVENTRICULAR_PREMATURE_BEAT:
                 return 1
-            case cls.PREMATURE_VENTRICULAR_CONTRACTION | cls.VENTRICULAR_ESCAPE_BEAT | cls.ATRIAL_ESCAPE_BEAT:
+            
+            #VEB
+            case cls.PREMATURE_VENTRICULAR_CONTRACTION | \
+                 cls.VENTRICULAR_ESCAPE_BEAT:
                 return 2
-            case cls.FUSION_OF_VENTRICULAR_AND_NORMAL_BEAT | cls.FUSION_OF_PACED_AND_NORMAL_BEAT:
+            
+            #F
+            case cls.FUSION_OF_VENTRICULAR_AND_NORMAL_BEAT:
                 return 3
-            case cls.VENTRICULAR_FLUTTER_WAVE:
+            
+            #Q
+            case cls.UNKNOWN_BEAT_Q | \
+                 cls.FUSION_OF_PACED_AND_NORMAL_BEAT | \
+                 cls.LEFT_OR_RIGHT_BUNDLE_BRANCH_BLOCK_BEAT | \
+                 cls.ISOLATED_QRS_LIKE_ARTIFACT | \
+                 cls.PACED_BEAT_SLASH | \
+                 cls.VENTRICULAR_FLUTTER_WAVE: 
                 return 4
-            case cls.PACED_BEAT:
-                return 5
-            case cls.UNKNOWN_BEAT_Q:
-                return 6
             case _:
                 raise ValueError(f"Il beat {beat} non ha una mappatura numerica definita.")
 
@@ -144,24 +166,22 @@ class SampleType(Enum):
             case 1: return  "SVEB"
             case 2: return  "VEB"
             case 3: return  "Fusion"
-            case 4: return  "Ventricular Flutter Wave"
-            case 5: return  "Paced Beat"
             case _: return  "Unknown Beat (Ignored)"
         
         
     @classmethod
-    def getBeatClass(cls, beat: 'SampleType') -> int:
+    def getBeatClass(cls, beat: 'BeatType') -> int:
         return beat.value[1]
     
     @classmethod
     def num_classes(cls) -> int:
         """Restituisce il numero di classi per la classificazione (escluse le annotazioni e i battiti ignorati)."""
-        return 14
+        return 16
     
     @classmethod
     def num_of_category(cls) -> int:
         """Restituisce il numero di classi per la classificazione (escluse le annotazioni e i battiti ignorati)."""
-        return 7
+        return 5
 
     @classmethod
     def get_ignore_class_value(cls) -> int:
@@ -171,7 +191,7 @@ class SampleType(Enum):
     @classmethod
     def get_ignore_category_value(cls) -> int:
         """Restituisce l'etichetta numerica che dovrebbe essere ignorata (es. UNKNOWN)"""
-        return 6
+        return 4
       
     
   
@@ -364,15 +384,15 @@ class MITBIHDataset(Dataset):
                         if len(parts) < 3:
                             raise ValueError(f"Riga di annotazione non valida: {line}.")
 
-                        annotationType = SampleType.tokenize(parts[2])
+                        annotationType = BeatType.tokenize(parts[2])
 
-                        if SampleType.isBeat(annotationType):
+                        if BeatType.isBeat(annotationType):
                             beat_dataDict_List.append({
                                 "annotation" : annotationType,          #tipologia di sample
                                 "sample_pos" : int(parts[1]),           # Indice del campione
                                 "time" : cls._formatTime(parts[0])      # Tempo in secondi
                             })
-                        elif SampleType.isTag(annotationType):
+                        elif BeatType.isTag(annotationType):
                             tag_dataDict_List.append({
                                 "annotation" : annotationType,          #tipologia di sample
                                 "sample_pos" : int(parts[1]),           # Indice del campione
@@ -548,11 +568,11 @@ class MITBIHDataset(Dataset):
                     match beat_type:
                         
                         #Se è un beat
-                        case SampleType.NORMAL_BEAT | SampleType.LEFT_BUNDLE_BRANCH_BLOCK_BEAT | SampleType.RIGHT_BUNDLE_BRANCH_BLOCK_BEAT | SampleType.LEFT_OR_RIGHT_BUNDLE_BRANCH_BLOCK_BEAT | SampleType.ISOLATED_QRS_LIKE_ARTIFACT\
-                            | SampleType.ATRIAL_PREMATURE_BEAT | SampleType.ABERRATED_ATRIAL_PREMATURE_BEAT | SampleType.NODAL_JUNCTIONAL_PREMATURE_BEAT | SampleType.NODAL_JUNCTIONAL_ESCAPE_BEAT | SampleType.SUPRAVENTRICULAR_PREMATURE_BEAT\
-                            | SampleType.PREMATURE_VENTRICULAR_CONTRACTION | SampleType.VENTRICULAR_ESCAPE_BEAT | SampleType.ATRIAL_ESCAPE_BEAT \
-                            | SampleType.FUSION_OF_VENTRICULAR_AND_NORMAL_BEAT | SampleType.FUSION_OF_PACED_AND_NORMAL_BEAT \
-                            | SampleType.UNKNOWN_BEAT_Q | SampleType.PACED_BEAT | SampleType.VENTRICULAR_FLUTTER_WAVE:
+                        case BeatType.NORMAL_BEAT | BeatType.LEFT_BUNDLE_BRANCH_BLOCK_BEAT | BeatType.RIGHT_BUNDLE_BRANCH_BLOCK_BEAT | BeatType.LEFT_OR_RIGHT_BUNDLE_BRANCH_BLOCK_BEAT | BeatType.ISOLATED_QRS_LIKE_ARTIFACT\
+                            | BeatType.ATRIAL_PREMATURE_BEAT | BeatType.ABERRATED_ATRIAL_PREMATURE_BEAT | BeatType.NODAL_JUNCTIONAL_PREMATURE_BEAT | BeatType.NODAL_JUNCTIONAL_ESCAPE_BEAT | BeatType.SUPRAVENTRICULAR_PREMATURE_BEAT\
+                            | BeatType.PREMATURE_VENTRICULAR_CONTRACTION | BeatType.VENTRICULAR_ESCAPE_BEAT | BeatType.ATRIAL_ESCAPE_BEAT \
+                            | BeatType.FUSION_OF_VENTRICULAR_AND_NORMAL_BEAT | BeatType.FUSION_OF_PACED_AND_NORMAL_BEAT \
+                            | BeatType.UNKNOWN_BEAT_Q | BeatType.PACED_BEAT_SLASH | BeatType.VENTRICULAR_FLUTTER_WAVE:
                                 
                                         
                             #for w in range(max(0 , i_pointer), min(i_pointer+2, len(record_windows))):
@@ -568,7 +588,7 @@ class MITBIHDataset(Dataset):
                                     current_window['beat_time'].append(time)
                             
                         #se è un tag utile      
-                        case SampleType.START_SEG_PLUS | SampleType.COMMENT | SampleType.END_NOISE | SampleType.START_NOISE | SampleType.NOISE | SampleType.CHANGE_IN_SIGNAL_QUALITY:
+                        case BeatType.START_SEG_PLUS | BeatType.COMMENT | BeatType.END_NOISE | BeatType.START_NOISE | BeatType.NOISE | BeatType.CHANGE_IN_SIGNAL_QUALITY:
                             
                             for w in range(0, len(record_windows)):
                                 current_window = record_windows[w]
@@ -793,7 +813,7 @@ class MITBIHDataset(Dataset):
                     #time = annotation["time"]
                     
                     #Verifico il tipo di annotazione
-                    if not SampleType.isBeat(beat_type):
+                    if not BeatType.isBeat(beat_type):
                         continue
                     
                     start = sample_pos - int(self._samples_per_window / 2)
@@ -831,8 +851,8 @@ class MITBIHDataset(Dataset):
                     self._windows[window_counter] = {
                         'signal_fragment' : signal_fragment,
                         'beatType': beat_type,
-                        'class' : torch.tensor([SampleType.getBeatClass(beat_type)], dtype=torch.long),
-                        'category': torch.tensor([SampleType.getBeatCategory(beat_type)], dtype=torch.long),
+                        'class' : torch.tensor([BeatType.getBeatClass(beat_type)], dtype=torch.long),
+                        'category': torch.tensor([BeatType.getBeatCategory(beat_type)], dtype=torch.long),
                         'record_name': record_name,
                     }
                     window_counter += 1

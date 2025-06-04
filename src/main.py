@@ -8,13 +8,17 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.optim import lr_scheduler
 from sklearn.metrics import confusion_matrix, f1_score, precision_score, accuracy_score
+from sklearn.metrics import (
+    confusion_matrix, precision_recall_fscore_support,
+    accuracy_score, cohen_kappa_score, classification_report
+)
 import matplotlib.pyplot as plt
 import seaborn as sns
 import numpy as np
 
 
 from NN_component.resNet import ResNet1D
-from dataset.dataset import DatasetDataMode, DatasetMode, MITBIHDataset, SampleType
+from dataset.dataset import DatasetDataMode, DatasetMode, MITBIHDataset, BeatType
 from dataset.datamodule import Mitbih_datamodule
 import os
 
@@ -236,18 +240,47 @@ def trainModel(
 
     print("Addestramento completato.")
 
-def plot_confusion_matrix(cm, class_labels, epoch, output_dir):
-    plt.figure(figsize=(10, 8))
-    sns.heatmap(cm, annot=True, fmt="d", cmap="Blues", xticklabels=class_labels, yticklabels=class_labels)
+# def plot_confusion_matrix(cm, class_labels, epoch, output_dir):
+#     plt.figure(figsize=(10, 8))
+#     sns.heatmap(cm, annot=True, fmt="d", cmap="Blues", xticklabels=class_labels, yticklabels=class_labels)
+#     plt.title(f"Confusion Matrix - Epoch {epoch}")
+#     plt.xlabel("Predicted Label")
+#     plt.ylabel("True Label")
+#     plt.tight_layout()
+    
+#     # Ensure output directory exists
+#     os.makedirs(output_dir, exist_ok=True)
+    
+#     plt.savefig(os.path.join(output_dir, f"confusion_matrix_epoch_{epoch}.png"))
+#     plt.close()
+
+def plot_confusion_matrix(cm, class_labels, epoch, output_dir, normalized=True, filename_prefix="confusion_matrix"):
+    plt.figure(figsize=(12, 12))
+
+    if normalized:
+        cm_normalized = cm.astype("float") / cm.sum(axis=1, keepdims=True)
+        cm_normalized = np.nan_to_num(cm_normalized)  # evita NaN nelle divisioni per zero
+        annot = np.empty_like(cm, dtype=object)
+
+        for i in range(cm.shape[0]):
+            for j in range(cm.shape[1]):
+                prob = cm_normalized[i, j]
+                count = cm[i, j]
+                annot[i, j] = f"{prob:.2f}\n({count})"
+        
+        sns.heatmap(cm_normalized, annot=annot, fmt='', cmap="Blues",
+                    xticklabels=class_labels, yticklabels=class_labels)
+    else:
+        sns.heatmap(cm, annot=True, fmt='d', cmap="Blues",
+                    xticklabels=class_labels, yticklabels=class_labels)
+
     plt.title(f"Confusion Matrix - Epoch {epoch}")
     plt.xlabel("Predicted Label")
     plt.ylabel("True Label")
     plt.tight_layout()
-    
-    # Ensure output directory exists
+
     os.makedirs(output_dir, exist_ok=True)
-    
-    plt.savefig(os.path.join(output_dir, f"confusion_matrix_epoch_{epoch}.png"))
+    plt.savefig(os.path.join(output_dir, f"{filename_prefix}_epoch_{epoch}.png"))
     plt.close()
 
 def training_classification(
@@ -279,12 +312,12 @@ def training_classification(
     
 
     class_weights = dataModule.get_train_dataset().getClassWeights().to(device)
-    class_to_ignore = SampleType.get_ignore_class_value()
-    classes_number = SampleType.num_classes()
+    class_to_ignore = BeatType.get_ignore_class_value()
+    classes_number = BeatType.num_classes()
     
     category_weights = dataModule.get_train_dataset().getCategoryWeights().to(device)
-    category_to_ignore = SampleType.get_ignore_category_value()
-    categories_number = SampleType.num_of_category()
+    category_to_ignore = BeatType.get_ignore_category_value()
+    categories_number = BeatType.num_of_category()
     
 
     class_loss_function = nn.CrossEntropyLoss(weight=class_weights, ignore_index=class_to_ignore)
@@ -396,7 +429,7 @@ def training_classification(
                     
                     total_val_loss += loss.item()
                     
-                    print(f"{class_loss} {category_loss} {loss}")
+                    #print(f"{class_loss} {category_loss} {loss}")
                     
                     # Collect predictions and true labels for classes
                     class_preds = torch.argmax(outputs[0], dim=1)
@@ -419,7 +452,7 @@ def training_classification(
             # Calculate metrics for Classes
             unique_class_labels_for_metrics = [i for i in range(classes_number) if i != class_to_ignore]
             cm_class = confusion_matrix(val_class_targets, val_class_preds, labels=unique_class_labels_for_metrics)
-            plot_confusion_matrix(cm_class, [SampleType.mapBeatClass_to_Label(i) for i in unique_class_labels_for_metrics], epoch + 1, confusion_matrix_dir)
+            #plot_confusion_matrix(cm_class, [BeatType.mapBeatClass_to_Label(i) for i in unique_class_labels_for_metrics], epoch + 1, confusion_matrix_dir)
 
             accuracy_class = accuracy_score(val_class_targets, val_class_preds)
             f1_macro_class = f1_score(val_class_targets, val_class_preds, average='macro', labels=unique_class_labels_for_metrics, zero_division=0)
@@ -429,7 +462,25 @@ def training_classification(
             # Calculate metrics for Categories
             unique_category_labels_for_metrics = [i for i in range(categories_number) if i != category_to_ignore]
             cm_category = confusion_matrix(val_category_targets, val_category_preds, labels=unique_category_labels_for_metrics)
-            plot_confusion_matrix(cm_category, [SampleType.mapBeatCategory_to_Label(i) for i in unique_category_labels_for_metrics], epoch + 1, os.path.join(confusion_matrix_dir, "category_confusion_matrix")) # Save category CM in a subfolder or with a different name
+            #plot_confusion_matrix(cm_category, [BeatType.mapBeatCategory_to_Label(i) for i in unique_category_labels_for_metrics], epoch + 1, os.path.join(confusion_matrix_dir, "category_confusion_matrix")) # Save category CM in a subfolder or with a different name
+
+            plot_confusion_matrix(
+                cm_class,
+                [BeatType.mapBeatClass_to_Label(i) for i in unique_class_labels_for_metrics],
+                epoch + 1,
+                confusion_matrix_dir,
+                normalized=True,
+                filename_prefix="class_confusion_matrix"
+            )
+
+            plot_confusion_matrix(
+                cm_category,
+                [BeatType.mapBeatCategory_to_Label(i) for i in unique_category_labels_for_metrics],
+                epoch + 1,
+                confusion_matrix_dir,
+                normalized=True,
+                filename_prefix="category_confusion_matrix"
+            )
 
             accuracy_category = accuracy_score(val_category_targets, val_category_preds)
             f1_macro_category = f1_score(val_category_targets, val_category_preds, average='macro', labels=unique_category_labels_for_metrics, zero_division=0)
@@ -549,7 +600,99 @@ def test_model(
 
     return metrics
   
-    
+def evaluate_model(
+    model: nn.Module,
+    dataloader: torch.utils.data.DataLoader,
+    device: torch.device,
+    class_labels: list,
+    category_labels: list,
+    class_to_ignore: int,
+    category_to_ignore: int,
+    class_label_mapper,
+    category_label_mapper,
+    output_dir: str,
+    name: str = "eval"
+):
+    model.eval()
+    model.to(device)
+
+    all_class_preds = []
+    all_class_targets = []
+    all_category_preds = []
+    all_category_targets = []
+
+    with torch.no_grad():
+        for signals, class_targets, category_targets in tqdm(dataloader, desc=f"Evaluating {name}"):
+            signals = signals.to(device)
+            class_targets = class_targets.squeeze(1).long().to(device)
+            category_targets = category_targets.squeeze(1).long().to(device)
+
+            outputs = model(signals)
+            class_preds = torch.argmax(outputs[0], dim=1)
+            category_preds = torch.argmax(outputs[1], dim=1)
+
+            valid_class_mask = (class_targets != class_to_ignore)
+            valid_category_mask = (category_targets != category_to_ignore)
+
+            all_class_preds.extend(class_preds[valid_class_mask].cpu().numpy())
+            all_class_targets.extend(class_targets[valid_class_mask].cpu().numpy())
+
+            all_category_preds.extend(category_preds[valid_category_mask].cpu().numpy())
+            all_category_targets.extend(category_targets[valid_category_mask].cpu().numpy())
+
+    # CLASS METRICS
+    unique_class_labels = [i for i in range(len(class_labels)) if i != class_to_ignore]
+    cm_class = confusion_matrix(all_class_targets, all_class_preds, labels=unique_class_labels)
+    plot_confusion_matrix(
+        cm_class,
+        [class_label_mapper(i) for i in unique_class_labels],
+        f"Confusion Matrix - Classes ({name})",
+        os.path.join(output_dir, f"confusion_matrix_class_{name}.png")
+    )
+
+    precision_c, recall_c, f1_c, _ = precision_recall_fscore_support(
+        all_class_targets, all_class_preds, labels=unique_class_labels, average=None, zero_division=0
+    )
+    acc_c = accuracy_score(all_class_targets, all_class_preds)
+    kappa_c = cohen_kappa_score(all_class_targets, all_class_preds)
+
+    weighted_avg_class = plot_confusion_matrix(
+        all_class_targets, all_class_preds, labels=unique_class_labels, average="weighted", zero_division=0
+    )
+
+    # CATEGORY METRICS
+    unique_category_labels = [i for i in range(len(category_labels)) if i != category_to_ignore]
+    cm_cat = confusion_matrix(all_category_targets, all_category_preds, labels=unique_category_labels)
+    plot_normalized_confusion_matrix(
+        cm_cat,
+        [category_label_mapper(i) for i in unique_category_labels],
+        f"Confusion Matrix - Categories ({name})",
+        os.path.join(output_dir, f"confusion_matrix_category_{name}.png")
+    )
+
+    precision_t, recall_t, f1_t, _ = precision_recall_fscore_support(
+        all_category_targets, all_category_preds, labels=unique_category_labels, average=None, zero_division=0
+    )
+    acc_t = accuracy_score(all_category_targets, all_category_preds)
+    kappa_t = cohen_kappa_score(all_category_targets, all_category_preds)
+
+    weighted_avg_category = precision_recall_fscore_support(
+        all_category_targets, all_category_preds, labels=unique_category_labels, average="weighted", zero_division=0
+    )
+
+    # Report
+    print(f"\n--- EVALUATION REPORT: {name.upper()} ---")
+    print(f"\n-> CLASS RESULTS:")
+    for i, idx in enumerate(unique_class_labels):
+        print(f"Class {class_label_mapper(idx)}: Precision={precision_c[i]:.4f}, Recall={recall_c[i]:.4f}, F1={f1_c[i]:.4f}")
+    print(f"Weighted Avg (Class): Precision={weighted_avg_class[0]:.4f}, Recall={weighted_avg_class[1]:.4f}, F1={weighted_avg_class[2]:.4f}")
+    print(f"Overall Accuracy (Class): {acc_c:.4f}, Kappa: {kappa_c:.4f}")
+
+    print(f"\n-> CATEGORY RESULTS:")
+    for i, idx in enumerate(unique_category_labels):
+        print(f"Category {category_label_mapper(idx)}: Precision={precision_t[i]:.4f}, Recall={recall_t[i]:.4f}, F1={f1_t[i]:.4f}")
+    print(f"Weighted Avg (Category): Precision={weighted_avg_category[0]:.4f}, Recall={weighted_avg_category[1]:.4f}, F1={weighted_avg_category[2]:.4f}")
+    print(f"Overall Accuracy (Category): {acc_t:.4f}, Kappa: {kappa_t:.4f}")
 
 
 def main():
@@ -626,7 +769,7 @@ def main():
     
     
    
-    model = ResNet1D(in_channels_signal=2, classes_output_dim=SampleType.num_classes(),categories_output_dim=SampleType.num_of_category())
+    model = ResNet1D(in_channels_signal=2, classes_output_dim=BeatType.num_classes(),categories_output_dim=BeatType.num_of_category())
 
     
     # model = Transformer_BPM_Regressor(
