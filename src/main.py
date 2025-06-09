@@ -1,6 +1,6 @@
 import argparse
 import math
-from typing import Final
+from typing import Final, List
 from tqdm.auto import tqdm
 import torch.optim as optim
 import torch
@@ -17,8 +17,10 @@ import seaborn as sns
 import numpy as np
 
 
-from NN_component.resNet import ResNet1D
-from dataset.dataset import DatasetDataMode, DatasetMode, MITBIHDataset, BeatType
+from NN_component.VisionTransformer import ViT1D
+from NN_component.VisionTransformer2 import ViT1D_2
+from NN_component.resNet import ResNet1D, ResNet1D_50
+from dataset.dataset import DatasetChannels, DatasetDataMode, DatasetMode, MITBIHDataset, BeatType
 from dataset.datamodule import Mitbih_datamodule
 import os
 
@@ -90,14 +92,14 @@ def trainModel(
     if checkpoint is not None:
         # Carica un checkpoint esistente se presente
         if os.path.exists(checkpoint):
-            print(f"Caricamento checkpoint da {checkpoint}")
+            APP_LOGGER.info(f"Caricamento checkpoint da {checkpoint}")
             checkpoint_data = torch.load(checkpoint, map_location=device)
             model.load_state_dict(checkpoint_data['model_state_dict'])
             optimizer.load_state_dict(checkpoint_data['optimizer_state_dict'])
             #scheduler.load_state_dict(checkpoint_data['scheduler_state_dict'])
             #best_val_loss = checkpoint_data['loss']
             start_epoch = checkpoint_data['epoch'] + 1
-            print(f"Riprendi l'addestramento dall'epoca {start_epoch} con validation loss {best_val_loss:.4f}")
+            APP_LOGGER.info(f"Riprendi l'addestramento dall'epoca {start_epoch} con validation loss {best_val_loss:.4f}")
 
 
     
@@ -111,7 +113,7 @@ def trainModel(
 
         
         for epoch in range(start_epoch, num_epochs):
-            print(f"Epoca {epoch+1}/{num_epochs}")
+            APP_LOGGER.info(f"Epoca {epoch+1}/{num_epochs}")
 
             # --- Fase di Training ---
             model.train()
@@ -129,17 +131,17 @@ def trainModel(
                 optimizer.zero_grad()
                 outputs = model(signal).squeeze(1) #da [12, 1] a [12]
                 
-                #print(bpm, outputs)
+                #APP_LOGGER.info(bpm, outputs)
 
-                # print(f"bpm shape: {bpm.shape}")
-                # print(f"outputs shape: {outputs.shape}")
+                # APP_LOGGER.info(f"bpm shape: {bpm.shape}")
+                # APP_LOGGER.info(f"outputs shape: {outputs.shape}")
 
 
-                # print(outputs)
-                # print(outputs.shape)
+                # APP_LOGGER.info(outputs)
+                # APP_LOGGER.info(outputs.shape)
                 
-                # # print(bpm)
-                # print(bpm.shape)
+                # # APP_LOGGER.info(bpm)
+                # APP_LOGGER.info(bpm.shape)
 
 
                 loss = loss_function(outputs, bpm)
@@ -178,7 +180,7 @@ def trainModel(
                     signal = signal.to(device)
                     bpm = bpm.long().squeeze(1).to(device)
                     
-                    #print(bpm)
+                    #APP_LOGGER.info(bpm)
                     
                     outputs = model(signal).squeeze(1) #da [12, 1] a [12]
                     
@@ -203,7 +205,7 @@ def trainModel(
             avg_val_rmse = math.sqrt(avg_val_loss) # RMSE è la radice quadrata dell'MSE medio
 
 
-            print(f"Epoca {epoch+1}: Training Loss = {avg_train_loss:.4f}, Validation Loss = {avg_val_loss:.4f}")
+            APP_LOGGER.info(f"Epoca {epoch+1}: Training Loss = {avg_train_loss:.4f}, Validation Loss = {avg_val_loss:.4f}")
 
             # Applica lo step dello scheduler, passandogli la validation loss
             scheduler.step(avg_val_loss)
@@ -225,7 +227,7 @@ def trainModel(
                 # Potresti volerne tenere di più o nominarli diversamente
                 checkpoint_path = os.path.join(checkpoint_dir, f"Epoch[{epoch+1}]_Loss[{avg_val_loss:.4f}].pth")
 
-                print(f"Validation loss migliorata ({avg_val_loss:.4f}). Salvataggio modello in {checkpoint_path}")
+                APP_LOGGER.info(f"Validation loss migliorata ({avg_val_loss:.4f}). Salvataggio modello in {checkpoint_path}")
                 torch.save({
                     'epoch': epoch,
                     'model_state_dict': model.state_dict(),
@@ -238,7 +240,7 @@ def trainModel(
 
 
 
-    print("Addestramento completato.")
+    APP_LOGGER.info("Addestramento completato.")
 
 # def plot_confusion_matrix(cm, class_labels, epoch, output_dir):
 #     plt.figure(figsize=(10, 8))
@@ -258,8 +260,13 @@ def plot_confusion_matrix(cm, class_labels, epoch, output_dir, normalized=True, 
     plt.figure(figsize=(12, 12))
 
     if normalized:
-        cm_normalized = cm.astype("float") / cm.sum(axis=1, keepdims=True)
-        cm_normalized = np.nan_to_num(cm_normalized)  # evita NaN nelle divisioni per zero
+        # cm_normalized = cm.astype("float") / cm.sum(axis=1, keepdims=True)
+        # cm_normalized = np.nan_to_num(cm_normalized)  # evita NaN nelle divisioni per zero
+        cm_sum = cm.sum(axis=1, keepdims=True)
+        cm_normalized = np.divide(cm.astype('float'), cm_sum, where=cm_sum != 0)
+        cm_normalized = np.nan_to_num(cm_normalized)  # sostituisce eventuali NaN con 0
+
+        
         annot = np.empty_like(cm, dtype=object)
 
         for i in range(cm.shape[0]):
@@ -299,8 +306,17 @@ def training_classification(
     assert checkpoint_dir is not None, "Cartella dei checkpoint non specificata"
     assert confusion_matrix_dir is not None, "Cartella per le matrici di confusione non specificata"
     
+    str_s = f"{'*'*40} TRAINING {'*'*40}"
+    APP_LOGGER.info('*'*len(str_s))
+    APP_LOGGER.info(str_s)
+    APP_LOGGER.info('*'*len(str_s))
+    
+    confusion_matrix_dir_category = os.path.join(confusion_matrix_dir, 'category_ConfMatrix_plots')
+    confusion_matrix_dir_class = os.path.join(confusion_matrix_dir, 'class_ConfMatrix_plots')
+    
     os.makedirs(checkpoint_dir, exist_ok=True)
-    os.makedirs(confusion_matrix_dir, exist_ok=True)
+    os.makedirs(confusion_matrix_dir_category, exist_ok=True)
+    os.makedirs(confusion_matrix_dir_class, exist_ok=True)
 
     start_epoch: int = 0
     best_val_loss = float('inf')
@@ -328,20 +344,31 @@ def training_classification(
     scheduler = lr_scheduler.ReduceLROnPlateau(
         optimizer,
         mode='min',         
-        factor=0.8,         
-        patience=4,         
+        factor=0.6,         
+        patience=5,         
         threshold=0.0001,   
         threshold_mode='rel' 
     )
     
+    # scheduler = lr_scheduler.ReduceLROnPlateau(
+    #     optimizer,
+    #     mode='min',         
+    #     factor=0.95,         
+    #     patience=1,         
+    #     threshold=0.0001,   
+    #     threshold_mode='rel' 
+    # )
+    
+    #scheduler = lr_scheduler.StepLR(optimizer, step_size=0, gamma=0.955)
+    
     if checkpoint is not None:
         if os.path.exists(checkpoint):
-            print(f"Caricamento checkpoint da {checkpoint}")
+            APP_LOGGER.info(f"Caricamento checkpoint da {checkpoint}")
             checkpoint_data = torch.load(checkpoint, map_location=device)
             model.load_state_dict(checkpoint_data['model_state_dict'])
             optimizer.load_state_dict(checkpoint_data['optimizer_state_dict'])
             start_epoch = checkpoint_data['epoch'] + 1
-            print(f"Riprendi l'addestramento dall'epoca {start_epoch} con validation loss {best_val_loss:.4f}")
+            APP_LOGGER.info(f"Riprendi l'addestramento dall'epoca {start_epoch} con validation loss {best_val_loss:.4f}")
 
     
 
@@ -352,7 +379,7 @@ def training_classification(
         log_file.write("Epoch, lr, Train_Loss, Val_Loss, Class_Accuracy, Class_F1_Macro, Class_Precision_Macro, Class_Recall_Macro, Category_Accuracy, Category_F1_Macro, Category_Precision_Macro, Category_Recall_Macro\n")
         
         for epoch in range(start_epoch, num_epochs):
-            print(f"Epoca {epoch+1}/{num_epochs}")
+            APP_LOGGER.info(f"Epoca {epoch+1}/{num_epochs}")
 
             # --- Fase di Training ---
             model.train()
@@ -375,8 +402,9 @@ def training_classification(
                 class_loss = class_loss_function(outputs[0], class_labels)
                 category_loss = category_loss_function(outputs[1], category_labels) # Assuming model outputs can be used for category directly or needs adjustment
                 
-                # Combine losses - you might want to weight these differently
-                loss = class_loss + category_loss # Simple sum for now
+                # Combine losses
+                #loss = class_loss + category_loss
+                loss = category_loss
                 
                 loss.backward()
                 optimizer.step()
@@ -399,7 +427,7 @@ def training_classification(
                 train_category_preds.extend(category_preds[valid_category_indices].cpu().numpy())
                 train_category_targets.extend(category_labels[valid_category_indices].cpu().numpy())
                 
-                train_loop.set_description(f"Training Epoca {epoch+1} Loss: {loss.item():.4f} LR: {scheduler.get_last_lr()}")
+                train_loop.set_description(f"Training Epoca {epoch+1} Loss: {loss.item():.4f} lr: {scheduler.get_last_lr()[0]:.8f}")
 
             avg_train_loss = total_train_loss / len(train_dataloader) # Divide by number of batches
 
@@ -425,9 +453,12 @@ def training_classification(
                     category_loss = category_loss_function(outputs[1], category_labels)
                     
                     
-                    loss = class_loss + category_loss
-                    
+                    #loss = class_loss + category_loss
+                    loss = category_loss
                     total_val_loss += loss.item()
+                    
+                    if math.isnan(loss):
+                        print(loss, category_loss, total_val_loss, category_labels, torch.argmax(outputs[1], dim=1))
                     
                     #print(f"{class_loss} {category_loss} {loss}")
                     
@@ -464,34 +495,41 @@ def training_classification(
             cm_category = confusion_matrix(val_category_targets, val_category_preds, labels=unique_category_labels_for_metrics)
             #plot_confusion_matrix(cm_category, [BeatType.mapBeatCategory_to_Label(i) for i in unique_category_labels_for_metrics], epoch + 1, os.path.join(confusion_matrix_dir, "category_confusion_matrix")) # Save category CM in a subfolder or with a different name
 
-            plot_confusion_matrix(
-                cm_class,
-                [BeatType.mapBeatClass_to_Label(i) for i in unique_class_labels_for_metrics],
-                epoch + 1,
-                confusion_matrix_dir,
-                normalized=True,
-                filename_prefix="class_confusion_matrix"
-            )
+            if ((epoch+1) % 5 == 0 and epoch != 0) or (avg_val_loss < best_val_loss):
 
-            plot_confusion_matrix(
-                cm_category,
-                [BeatType.mapBeatCategory_to_Label(i) for i in unique_category_labels_for_metrics],
-                epoch + 1,
-                confusion_matrix_dir,
-                normalized=True,
-                filename_prefix="category_confusion_matrix"
-            )
+                plot_confusion_matrix(
+                    cm_class,
+                    [BeatType.mapBeatClass_to_Label(i) for i in unique_class_labels_for_metrics],
+                    epoch + 1,
+                    confusion_matrix_dir_class,
+                    normalized=True,
+                    filename_prefix=f"epoch_{epoch+1}_class_confusion_matrix"
+                )
+
+                plot_confusion_matrix(
+                    cm_category,
+                    [BeatType.mapBeatCategory_to_Label(i) for i in unique_category_labels_for_metrics],
+                    epoch + 1,
+                    confusion_matrix_dir_category,
+                    normalized=True,
+                    filename_prefix=f"epoch_{epoch+1}_category_confusion_matrix"
+                )
 
             accuracy_category = accuracy_score(val_category_targets, val_category_preds)
             f1_macro_category = f1_score(val_category_targets, val_category_preds, average='macro', labels=unique_category_labels_for_metrics, zero_division=0)
             precision_macro_category = precision_score(val_category_targets, val_category_preds, average='macro', labels=unique_category_labels_for_metrics, zero_division=0)
             recall_macro_category = f1_score(val_category_targets, val_category_preds, average='macro', labels=unique_category_labels_for_metrics, zero_division=0)
 
-            print(f"Epoca {epoch+1}: Training Loss = {avg_train_loss:.4f}, Validation Loss = {avg_val_loss:.4f}")
-            print(f"Class Metrics - Accuracy: {accuracy_class:.4f}, F1-Macro: {f1_macro_class:.4f}, Precision-Macro: {precision_macro_class:.4f}, Recall-Macro: {recall_macro_class:.4f}")
-            print(f"Category Metrics - Accuracy: {accuracy_category:.4f}, F1-Macro: {f1_macro_category:.4f}, Precision-Macro: {precision_macro_category:.4f}, Recall-Macro: {recall_macro_category:.4f}")
+            APP_LOGGER.info('-'*100)
+            APP_LOGGER.info(f"Risultati Epoca {epoch+1}: ")
+            APP_LOGGER.info(f"Training Loss = {avg_train_loss:.4f}")
+            APP_LOGGER.info(f"Validation Loss = {avg_val_loss:.4f}")
+            APP_LOGGER.info(f"Class Metrics    - Accuracy: {accuracy_class:.4f}, F1-Macro: {f1_macro_class:.4f}, Precision-Macro: {precision_macro_class:.4f}, Recall-Macro: {recall_macro_class:.4f}")
+            APP_LOGGER.info(f"Category Metrics - Accuracy: {accuracy_category:.4f}, F1-Macro: {f1_macro_category:.4f}, Precision-Macro: {precision_macro_category:.4f}, Recall-Macro: {recall_macro_category:.4f}")
+            APP_LOGGER.info('-'*100)
 
             scheduler.step(avg_val_loss)
+            #scheduler.step(epoch)
 
             log_file.write(f"{epoch+1}, {optimizer.param_groups[0]['lr']:.6f}, {avg_train_loss:.6f}, {avg_val_loss:.6f}, {accuracy_class:.6f}, {f1_macro_class:.6f}, {precision_macro_class:.6f}, {recall_macro_class:.6f}, {accuracy_category:.6f}, {f1_macro_category:.6f}, {precision_macro_category:.6f}, {recall_macro_category:.6f}\n")
             log_file.flush()
@@ -499,7 +537,7 @@ def training_classification(
             if avg_val_loss < best_val_loss:
                 best_val_loss = avg_val_loss
                 checkpoint_path = os.path.join(checkpoint_dir, f"Epoch[{epoch+1}]_Loss[{avg_val_loss:.4f}].pth")
-                print(f"Validation loss migliorata ({avg_val_loss:.4f}). Salvataggio modello in {checkpoint_path}")
+                APP_LOGGER.info(f"Validation loss migliorata ({avg_val_loss:.4f}). Salvataggio modello in {checkpoint_path}")
                 torch.save({
                     'epoch': epoch,
                     'model_state_dict': model.state_dict(),
@@ -508,7 +546,16 @@ def training_classification(
                     'loss': avg_val_loss,
                 }, checkpoint_path)
 
-    print("Addestramento completato.")
+    APP_LOGGER.info("Addestramento completato.")
+    
+    checkpoint_path = os.path.join(checkpoint_dir, f"Epoch[{epoch+1}]_Loss[{avg_val_loss:.4f}].pth")
+    torch.save({
+        'epoch': epoch,
+        'model_state_dict': model.state_dict(),
+        'optimizer_state_dict': optimizer.state_dict(),
+        'scheduler_state_dict': scheduler.state_dict(), 
+        'loss': avg_val_loss,
+    }, checkpoint_path)
 
 def test_model(
     device: torch.device, 
@@ -535,7 +582,7 @@ def test_model(
     num_samples = 0      # Conta il numero totale di campioni elaborati
 
    
-    print(f"Caricamento checkpoint da {checkpoint}")
+    APP_LOGGER.info(f"Caricamento checkpoint da {checkpoint}")
     checkpoint_data = torch.load(checkpoint, map_location=device)
     model.load_state_dict(checkpoint_data['model_state_dict'])
    
@@ -543,7 +590,7 @@ def test_model(
     batch_size = test_dataloader.batch_size
     # Disabilita il calcolo dei gradienti durante la valutazione
     
-    print("Avvio valutazione sul set di test...")
+    APP_LOGGER.info("Avvio valutazione sul set di test...")
     with torch.no_grad():
         # Utilizza tqdm per visualizzare l'avanzamento della valutazione
         #test_loop = tqdm(test_dataloader, desc="Valutazione Test Set")
@@ -564,7 +611,7 @@ def test_model(
             #loss = loss_function(outputs, bpm)
             
             for i in range(batch_size):
-                print(f"Target: {bpm[i]} Predected: {outputs[i]} Loss: -")
+                APP_LOGGER.info(f"Target: {bpm[i]} Predected: {outputs[i]} Loss: -")
 
             print()
 
@@ -586,11 +633,11 @@ def test_model(
     avg_test_mae = total_test_mae / num_samples
     avg_test_rmse = math.sqrt(avg_test_loss) # RMSE è la radice quadrata dell'MSE medio
 
-    print("\n--- Risultati Test Set ---")
-    print(f"Test Loss (MSE): {avg_test_loss:.6f}")
-    print(f"Test MAE: {avg_test_mae:.6f}")
-    print(f"Test RMSE: {avg_test_rmse:.6f}")
-    print("--------------------------")
+    APP_LOGGER.info("\n--- Risultati Test Set ---")
+    APP_LOGGER.info(f"Test Loss (MSE): {avg_test_loss:.6f}")
+    APP_LOGGER.info(f"Test MAE: {avg_test_mae:.6f}")
+    APP_LOGGER.info(f"Test RMSE: {avg_test_rmse:.6f}")
+    APP_LOGGER.info("--------------------------")
 
     metrics = {
         'test_loss': avg_test_loss,
@@ -663,7 +710,7 @@ def evaluate_model(
     # CATEGORY METRICS
     unique_category_labels = [i for i in range(len(category_labels)) if i != category_to_ignore]
     cm_cat = confusion_matrix(all_category_targets, all_category_preds, labels=unique_category_labels)
-    plot_normalized_confusion_matrix(
+    plot_confusion_matrix(
         cm_cat,
         [category_label_mapper(i) for i in unique_category_labels],
         f"Confusion Matrix - Categories ({name})",
@@ -681,18 +728,18 @@ def evaluate_model(
     )
 
     # Report
-    print(f"\n--- EVALUATION REPORT: {name.upper()} ---")
-    print(f"\n-> CLASS RESULTS:")
+    APP_LOGGER.info(f"\n--- EVALUATION REPORT: {name.upper()} ---")
+    APP_LOGGER.info(f"\n-> CLASS RESULTS:")
     for i, idx in enumerate(unique_class_labels):
-        print(f"Class {class_label_mapper(idx)}: Precision={precision_c[i]:.4f}, Recall={recall_c[i]:.4f}, F1={f1_c[i]:.4f}")
-    print(f"Weighted Avg (Class): Precision={weighted_avg_class[0]:.4f}, Recall={weighted_avg_class[1]:.4f}, F1={weighted_avg_class[2]:.4f}")
-    print(f"Overall Accuracy (Class): {acc_c:.4f}, Kappa: {kappa_c:.4f}")
+        APP_LOGGER.info(f"Class {class_label_mapper(idx)}: Precision={precision_c[i]:.4f}, Recall={recall_c[i]:.4f}, F1={f1_c[i]:.4f}")
+    APP_LOGGER.info(f"Weighted Avg (Class): Precision={weighted_avg_class[0]:.4f}, Recall={weighted_avg_class[1]:.4f}, F1={weighted_avg_class[2]:.4f}")
+    APP_LOGGER.info(f"Overall Accuracy (Class): {acc_c:.4f}, Kappa: {kappa_c:.4f}")
 
-    print(f"\n-> CATEGORY RESULTS:")
+    APP_LOGGER.info(f"\n-> CATEGORY RESULTS:")
     for i, idx in enumerate(unique_category_labels):
-        print(f"Category {category_label_mapper(idx)}: Precision={precision_t[i]:.4f}, Recall={recall_t[i]:.4f}, F1={f1_t[i]:.4f}")
-    print(f"Weighted Avg (Category): Precision={weighted_avg_category[0]:.4f}, Recall={weighted_avg_category[1]:.4f}, F1={weighted_avg_category[2]:.4f}")
-    print(f"Overall Accuracy (Category): {acc_t:.4f}, Kappa: {kappa_t:.4f}")
+        APP_LOGGER.info(f"Category {category_label_mapper(idx)}: Precision={precision_t[i]:.4f}, Recall={recall_t[i]:.4f}, F1={f1_t[i]:.4f}")
+    APP_LOGGER.info(f"Weighted Avg (Category): Precision={weighted_avg_category[0]:.4f}, Recall={weighted_avg_category[1]:.4f}, F1={weighted_avg_category[2]:.4f}")
+    APP_LOGGER.info(f"Overall Accuracy (Category): {acc_t:.4f}, Kappa: {kappa_t:.4f}")
 
 
 def main():
@@ -728,25 +775,55 @@ def main():
     sample_rate = 360
     sample_per_window = sample_rate * args.window_size
     sample_per_side = sample_rate * args.window_stride
-
+    channels_enum = DatasetChannels.TWO
     
-    # MITBIHDataset.setDatasetPath(MITBIH_PATH)
+    sample_per_window = 280 #int(sample_rate*0.6),#args.window_size,
     
-    # train_dataset = MITBIHDataset(
-    #     mode=DatasetMode.TRAINING, 
-    #     sample_rate=360,
-    #     sample_per_window=360*10,  # 10 secondi
-    #     sample_per_side=360*5,  # 5 secondi
-    # )
+    
+    models: List[nn.Module] = [
+    
+        ResNet1D_50(
+            in_channels_signal=channels_enum.value, 
+            classes_output_dim=BeatType.num_classes(),
+            categories_output_dim=BeatType.num_of_category()
+        ),
+        
+        # ViT1D(
+        #     signal_length = sample_per_window,
+        #     patch_size = 12,
+        #     in_channels=channels_enum.value,
+        #     emb_dim=150,
+        #     depth=10,
+        #     num_heads=10,
+        #     mlp_dim=150*3,
+        #     classes_output_dim=BeatType.num_classes(),
+        #     categories_output_dim=BeatType.num_of_category(),
+        #     dropout = 0.3
+        # )
+        
+        # ViT1D_2(
+        #     signal_length = sample_per_window,
+        #     in_channels=channels_enum.value,
+        #     emb_dim=128,
+        #     depth=10,
+        #     num_heads=16,
+        #     mlp_dim=128*4,
+        #     classes_output_dim=BeatType.num_classes(),
+        #     categories_output_dim=BeatType.num_of_category(),
+        #     dropout = 0.3
+        # )
+    ]
     
     dataModule = Mitbih_datamodule(
         args.dataset_path, 
         datasetDataMode=DatasetDataMode.BEAT_CLASSIFICATION,
+        datasetChannels=channels_enum,
         sample_rate=sample_rate, 
-        sample_per_window=int(sample_rate*0.6),#args.window_size,
+        sample_per_window=sample_per_window,
         num_workers=4,
-        batch_size=128#12
+        batch_size=128*(2 // channels_enum.value)#12
     )
+    
     
     # dataset = dataModule.get_train_dataset()
     # path = os.path.join(setting.DATA_FOLDER_PATH,'BEATS', f'plot.png')
@@ -769,7 +846,9 @@ def main():
     
     
    
-    model = ResNet1D(in_channels_signal=2, classes_output_dim=BeatType.num_classes(),categories_output_dim=BeatType.num_of_category())
+    #model = ResNet1D(in_channels_signal=2, classes_output_dim=BeatType.num_classes(),categories_output_dim=BeatType.num_of_category())
+    
+    
 
     
     # model = Transformer_BPM_Regressor(
@@ -789,34 +868,27 @@ def main():
     #     input_length=args.window_size*sample_rate
     # )
     
-    print("Architettura del Modello:")
-    print(model)
-    
     
     device: torch.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    print(f"Utilizzando dispositivo: {device}")
-
-    training_classification(
-        device = device,
-        dataModule = dataModule,
-        model = model,
-        num_epochs = 40,
-        training_log_path=os.path.join(setting.LOGS_FOLDER, 'training_logs.txt'),
-        checkpoint_dir = setting.OUTPUT_PATH,
-        confusion_matrix_dir=setting.LOGS_FOLDER
-        #checkpoint = "/app/Data/Models/Epoch[1]_Loss[inf].pth"
+    APP_LOGGER.info(f"Utilizzando dispositivo: {device}")
     
-    )
+    for model in models:
+        # APP_LOGGER.info("Architettura del Modello:")
+        # APP_LOGGER.info(model)
+        
+        training_classification(
+            device = device,
+            dataModule = dataModule,
+            model = model,
+            num_epochs = args.num_epochs,
+            training_log_path=os.path.join(setting.LOGS_FOLDER, 'training_logs.txt'),
+            checkpoint_dir = os.path.join(setting.OUTPUT_PATH, model.__class__.__name__),
+            confusion_matrix_dir=os.path.join(setting.OUTPUT_PATH, model.__class__.__name__)#setting.LOGS_FOLDER
+            #checkpoint = "/app/Data/Models/Epoch[1]_Loss[inf].pth"
+        
+        )
 
-    # trainModel(
-    #     device = device,
-    #     dataModule = dataModule,
-    #     model = model,
-    #     num_epochs = 40,
-    #     training_log_path=os.path.join(setting.LOGS_FOLDER, 'training_logs.txt'),
-    #     checkpoint_dir = setting.OUTPUT_PATH,
-    #     #checkpoint = "/app/Data/Models/Epoch[1]_Loss[inf].pth"
-    # )
+
     
     # test_model(
     #     device = device,

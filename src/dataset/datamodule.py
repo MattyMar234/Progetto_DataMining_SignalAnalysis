@@ -7,7 +7,7 @@ import os
 
 from tqdm import tqdm
 
-from dataset.dataset import MITBIHDataset, DatasetMode, DatasetDataMode
+from dataset.dataset import DatasetChannels, MITBIHDataset, DatasetMode, DatasetDataMode
 from torch.utils.data import DataLoader
 
 
@@ -16,6 +16,7 @@ class Mitbih_datamodule(pl.LightningDataModule):
     def __init__(self, 
             datasetFolder:str, 
             datasetDataMode: DatasetDataMode, 
+            datasetChannels: DatasetChannels,
             batch_size: int = 1, 
             num_workers: int  = 1,
             sample_rate: int | None = None,
@@ -39,6 +40,7 @@ class Mitbih_datamodule(pl.LightningDataModule):
         self._sample_per_stride = sample_per_stride
         self._sample_rate = sample_rate
         self._datasetDataMode = datasetDataMode
+        self._datasetChannels = datasetChannels
         
         self._prefetch_factor: int | None = 1
         self._persistent_workers: bool = persistent_workers
@@ -49,11 +51,11 @@ class Mitbih_datamodule(pl.LightningDataModule):
             self._pin_memory = False
             self._prefetch_factor = None
             
-        MITBIHDataset.initDataset(path=datasetFolder, sample_rate=sample_rate)
+        MITBIHDataset.initDataset(path=datasetFolder, sample_rate=sample_rate, random_seed=120)
      
-        self._TRAINING_DATASET = MITBIHDataset(dataMode=self._datasetDataMode, mode=DatasetMode.TRAINING, sample_per_window=sample_per_window, sample_per_stride=sample_per_stride)
-        self._VALIDATION_DATASET = MITBIHDataset(dataMode=self._datasetDataMode, mode=DatasetMode.VALIDATION, sample_per_window=sample_per_window, sample_per_stride=sample_per_stride)
-        self._TEST_DATASET = MITBIHDataset(dataMode=self._datasetDataMode, mode=DatasetMode.TEST, sample_per_window=sample_per_window, sample_per_stride=sample_per_stride)
+        self._TRAINING_DATASET = MITBIHDataset(dataMode=self._datasetDataMode, channels=self._datasetChannels, mode=DatasetMode.TRAINING, sample_per_window=sample_per_window, sample_per_stride=sample_per_stride)
+        self._VALIDATION_DATASET = MITBIHDataset(dataMode=self._datasetDataMode, channels=self._datasetChannels, mode=DatasetMode.VALIDATION, sample_per_window=sample_per_window, sample_per_stride=sample_per_stride)
+        self._TEST_DATASET = MITBIHDataset(dataMode=self._datasetDataMode, channels=self._datasetChannels, mode=DatasetMode.TEST, sample_per_window=sample_per_window, sample_per_stride=sample_per_stride)
     
     def print_all_window(self, columNumber: int, save_path: str, dataset: MITBIHDataset) -> None:
         

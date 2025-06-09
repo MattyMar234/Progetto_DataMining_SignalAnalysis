@@ -12,6 +12,7 @@ import io
 from PIL import Image
 from tqdm import tqdm
 import matplotlib.pyplot as plt
+from imblearn.over_sampling import SMOTE
 
 
 from sklearn.utils.class_weight import compute_class_weight
@@ -27,15 +28,23 @@ class DatasetMode(Enum):
 class DatasetDataMode(Enum):
     BEAT_CLASSIFICATION = auto()
     BPM_REGRESSION = auto()
+    
+class DatasetChannels(Enum):
+    ONE = 1
+    TWO = 2
 
 #https://archive.physionet.org/physiobank/database/html/mitdbdir/intro.htm#leads
 class BeatType(Enum):
+    
+    UNKNOWN_BEAT_Q = "QB", 0, "Unknown beat"
+    #LEFT_OR_RIGHT_BUNDLE_BRANCH_BLOCK_BEAT = "B",-1, "?"
+    
     
     #Normal e battiti di conduzione normale
     NORMAL_BEAT = "N",1, "Normal beat"
     LEFT_BUNDLE_BRANCH_BLOCK_BEAT = "L",2, "Left bundle branch block beat"
     RIGHT_BUNDLE_BRANCH_BLOCK_BEAT = "R",3, "Right bundle branch block beat"
-    LEFT_OR_RIGHT_BUNDLE_BRANCH_BLOCK_BEAT = "B",0, "?"
+    
     NODAL_JUNCTIONAL_ESCAPE_BEAT = "j",4, "Nodal (junctional) escape beat"
     ATRIAL_ESCAPE_BEAT = "e",5, "Atrial escape beat"
     
@@ -58,8 +67,8 @@ class BeatType(Enum):
     VENTRICULAR_FLUTTER_WAVE = "!", 14, "Ventricular flutter wave"
     PACED_BEAT_SLASH = "/", 15, "Paced beat"
     PACED_BEAT_P = "P", 15, "Paced beat"
-    ISOLATED_QRS_LIKE_ARTIFACT = "|", 0, "Isolated QRS-like artifact"
-    UNKNOWN_BEAT_Q = "Q", 0, "Unknown beat"
+    ISOLATED_QRS_LIKE_ARTIFACT = "|", 16, "Isolated QRS-like artifact"
+    
   
     #ANNOTATION
     CHANGE_IN_SIGNAL_QUALITY = "~", -1, "?"
@@ -80,22 +89,33 @@ class BeatType(Enum):
         return list(map(lambda c: c.value, cls))
     
     @classmethod
-    def tokenize(cls, type: str) -> 'BeatType':
-        if not isinstance(type, str) or len(type) == 0:
-            raise ValueError(f"Tipo di battito non valido: {type}")
+    def tokenize(cls, type: str | int) -> 'BeatType':
+       
+        # Mappa il carattere o l'intero in un oggetto SampleType usando i valori degli enum
+        if isinstance(type, int):
+            for member in cls:
+                if member.value[1] == type:
+                    return member
+            raise ValueError(f"Tipo di battito sconosciuto: {type}. Non può essere convertito in SampleType.")
+        
+        elif isinstance(type, str):
+            # if len(type) != 1:
+            #     raise ValueError(f"Tipo di battito non valido: {type}")
+        
+            type_char = type.strip()[0]
+            for member in cls:
+                if type_char in member.value[0]:
+                    return member
+            raise ValueError(f"Tipo di battito sconosciuto: {type_char}. Non può essere convertito in SampleType.")
+        else:
+            raise ValueError(f"Tipo di battito non valido: {type}. Tipo del dato: {type(type)}. Deve essere un carattere o un intero.")
 
-        # Mappa il carattere a un oggetto SampleType usando i valori degli enum
-        type_char = type.strip()[0]
-        for member in cls:
-            if type_char in member.value[0].split():
-                return member
-        raise ValueError(f"Tipo di battito sconosciuto: {type_char}. Non può essere convertito in SampleType.")
-    
     @classmethod  
     def isBeat(cls, annotation: 'BeatType') -> bool:
         return annotation in {
             cls.NORMAL_BEAT, cls.LEFT_BUNDLE_BRANCH_BLOCK_BEAT, cls.RIGHT_BUNDLE_BRANCH_BLOCK_BEAT,
-            cls.LEFT_OR_RIGHT_BUNDLE_BRANCH_BLOCK_BEAT, cls.ISOLATED_QRS_LIKE_ARTIFACT,
+            #cls.LEFT_OR_RIGHT_BUNDLE_BRANCH_BLOCK_BEAT, 
+            cls.ISOLATED_QRS_LIKE_ARTIFACT,
             cls.ATRIAL_PREMATURE_BEAT, cls.ABERRATED_ATRIAL_PREMATURE_BEAT,
             cls.NODAL_JUNCTIONAL_PREMATURE_BEAT, cls.NODAL_JUNCTIONAL_ESCAPE_BEAT,
             cls.SUPRAVENTRICULAR_PREMATURE_BEAT, cls.PREMATURE_VENTRICULAR_CONTRACTION,
@@ -142,7 +162,6 @@ class BeatType(Enum):
             #Q
             case cls.UNKNOWN_BEAT_Q | \
                  cls.FUSION_OF_PACED_AND_NORMAL_BEAT | \
-                 cls.LEFT_OR_RIGHT_BUNDLE_BRANCH_BLOCK_BEAT | \
                  cls.ISOLATED_QRS_LIKE_ARTIFACT | \
                  cls.PACED_BEAT_SLASH | \
                  cls.VENTRICULAR_FLUTTER_WAVE: 
@@ -166,7 +185,7 @@ class BeatType(Enum):
             case 1: return  "SVEB"
             case 2: return  "VEB"
             case 3: return  "Fusion"
-            case _: return  "Unknown Beat (Ignored)"
+            case _: return  "Unclassifiable"
         
         
     @classmethod
@@ -176,7 +195,7 @@ class BeatType(Enum):
     @classmethod
     def num_classes(cls) -> int:
         """Restituisce il numero di classi per la classificazione (escluse le annotazioni e i battiti ignorati)."""
-        return 16
+        return 17
     
     @classmethod
     def num_of_category(cls) -> int:
@@ -230,7 +249,7 @@ class MITBIHDataset(Dataset):
     
     __SAMPLE_RATE: int | None = None
     __RANDOM_SEED: int | None = None
-    
+    __USE_SMOTE: bool = True
     # Dizionario per memorizzare il segnale di ogni record
     _ALL_SIGNALS_DICT: Dict[str, torch.Tensor] = {}
     
@@ -418,6 +437,7 @@ class MITBIHDataset(Dataset):
             sample_per_stride: int | None = None, 
             mode: DatasetMode | None = None, 
             dataMode: DatasetDataMode | None = None, 
+            channels: DatasetChannels = DatasetChannels.TWO
         ):
         assert MITBIHDataset._DATASET_PATH, "Il percorso del dataset non è stato impostato. Usa 'setDatasetPath' per impostarlo."
         assert MITBIHDataset._FILES_CHEKED, "files del dataset non verificati"
@@ -425,6 +445,7 @@ class MITBIHDataset(Dataset):
    
         self._mode: DatasetMode = mode
         self._dataMode: DatasetDataMode = dataMode
+        self._channels: DatasetChannels = channels
         
         self._samples_per_window: int = sample_per_window
         self._samples_per_side:int = sample_per_stride
@@ -777,15 +798,16 @@ class MITBIHDataset(Dataset):
         
         progress_bar = tqdm(total=len(indices))
         
+        dataDict: Dict[BeatType, List[torch.Tensor]] = {}
+        
         try:
             for record_name in MITBIHDataset._ALL_RECORDS:
                 progress_bar.set_description(f"record {record_name}")
                 
-                if done:
-                    break
+                if done:  break
                 
-                signal = MITBIHDataset._ALL_SIGNALS_DICT[record_name]
                 annotations = MITBIHDataset._ALL_SIGNALS_BEAT_ANNOTATIONS_DICT[record_name]
+                signal = MITBIHDataset._ALL_SIGNALS_DICT[record_name]
                 
                 
                 for annotation in annotations:
@@ -819,50 +841,147 @@ class MITBIHDataset(Dataset):
                     start = sample_pos - int(self._samples_per_window / 2)
                     end = sample_pos + int(self._samples_per_window / 2)
 
-                    # Handle boundary conditions for window extraction
+
+                    #ignoro il campione se non ci sta nella finestra
+                    # if start < 0 or end >= MITBIHDataset._MAX_SAMPLE_NUM:
+                    #     continue
+                    
                     if start < 0:
-                        padding_left = -start
+                        offset = abs(start)
                         start = 0
-                        end = self._samples_per_window # Window size is fixed
-                    elif end > signal.shape[1]:
-                        padding_right = end - signal.shape[1]
-                        end = signal.shape[1]
-                        start = end - self._samples_per_window # Window size is fixed
-                    else:
-                        padding_left = 0
-                        padding_right = 0
+                        end = end + offset
                     
-                    # Ensure start is not negative after boundary adjustments
-                    start = max(0, start)
-                    
-                    # Extract and pad signal fragment
+                    if end > MITBIHDataset._MAX_SAMPLE_NUM - 1:
+                        offset = end - (MITBIHDataset._MAX_SAMPLE_NUM -1)
+                        end = MITBIHDataset._MAX_SAMPLE_NUM -1
+                        start = start - offset
+                      
+                    # # Extract and pad signal fragment
                     signal_fragment = signal[:, start:end]
                     
-                    # Apply padding if necessary
-                    current_window_len = signal_fragment.shape[1]
-                    if current_window_len < self._samples_per_window:
-                        # Add padding to the right to reach desired window length
-                        padding_needed = self._samples_per_window - current_window_len
-                        signal_fragment = torch.nn.functional.pad(signal_fragment, (0, padding_needed))
-                    elif current_window_len > self._samples_per_window:
-                        # If for some reason it's too long, trim it
-                        signal_fragment = signal_fragment[:, :self._samples_per_window]
+                    if dataDict.get(beat_type) is None:
+                        dataDict[beat_type] = [signal_fragment]
+                    else:
+                        dataDict[beat_type].append(signal_fragment)
                     
-                    self._windows[window_counter] = {
-                        'signal_fragment' : signal_fragment,
-                        'beatType': beat_type,
-                        'class' : torch.tensor([BeatType.getBeatClass(beat_type)], dtype=torch.long),
-                        'category': torch.tensor([BeatType.getBeatCategory(beat_type)], dtype=torch.long),
-                        'record_name': record_name,
-                    }
-                    window_counter += 1
-                
         finally:
             progress_bar.close()  
+        
+        if self._mode == DatasetMode.TRAINING and MITBIHDataset.__USE_SMOTE:
+            APP_LOGGER.info(f"Applicazione della SMOTE")   
+            APP_LOGGER.info("Dati prima della SMOTE:")
+            for beat_type, signals in dataDict.items():
+                APP_LOGGER.info(f"{beat_type.value[0]}: {len(signals)} segnali")
+            
+            X = []
+            y = []
+            
+            threshold = 2
+            ignored_x = []
+            ignored_y = []
+            classNumber:dict = {}
+            
+
+            for beat_type, signals in dataDict.items():
+                
+                if len(signals) < threshold:
+                    APP_LOGGER.warning(f"Tipo di battito {beat_type.value[0]} ha meno di {threshold} segnali, ignorato per la SMOTE")
+                    for signal in signals:
+                        ignored_x.append(signal)
+                        ignored_y.append(beat_type)  # Usa il valore numerico del BeatType
+                else:
+                    classNumber[beat_type.value[1]] = len(signals)
+                    for signal in signals:
+                        X.append(signal.reshape(-1).numpy())  
+                        y.append(beat_type.value[1])          
+                  
+            X = np.stack(X)  # shape: (n_samples, 560)
+            y = np.array(y)  # shape: (n_samples,)            
+                        
+            sampling_strategy = {
+                k: v if (v > 10_000 or k == 0) else (v*10 if v < 500 else (v*6 if v < 1000 else v*3))
+                for k, v in classNumber.items()
+            }
+            
+            APP_LOGGER.info('-'*100)
+            APP_LOGGER.info("Esecuzione della SMOTE...")
+            APP_LOGGER.info(sampling_strategy)
+            smote = SMOTE(sampling_strategy=sampling_strategy, random_state=MITBIHDataset.__RANDOM_SEED)    
+            X_res, y_res = smote.fit_resample(X, y)
+            APP_LOGGER.info('-'*100)
+            
+            APP_LOGGER.info("Dati dopo la SMOTE:")
+            for beat_type in BeatType:
+                if BeatType.isBeat(beat_type):
+                    count = np.sum(y_res == beat_type.value[1])
+                    APP_LOGGER.info(f"{beat_type.value[0]}: {count} segnali")
+            
+            X_res = X_res.reshape(-1, 2, 280)  # ripristino della forma originale
+            
+            
+            for xi, yi in zip(X_res, y_res):
+                beat_type = BeatType.tokenize(int(yi))
+                tensor_signal = torch.tensor(xi).view(self._channels.value, 280)
+               
+                if len(tensor_signal.shape) == 1:
+                    tensor_signal = tensor_signal.unsqueeze(dim=0)
+               
+                self._windows[window_counter] = {
+                    'signal_fragment' : tensor_signal,
+                    'beatType': beat_type,
+                    'class' : torch.tensor([yi], dtype=torch.long),
+                    'category': torch.tensor([BeatType.getBeatCategory(beat_type)], dtype=torch.long),
+                    #'record_name': record_name,
+                }
+                window_counter += 1
+                
+            for tensor_signal, beat_type in zip(ignored_x, ignored_y):
+                
+                self._windows[window_counter] = {
+                    'signal_fragment' : tensor_signal,
+                    'beatType': beat_type,
+                    'class' : torch.tensor([BeatType.getBeatClass(beat_type)], dtype=torch.long),
+                    'category': torch.tensor([BeatType.getBeatCategory(beat_type)], dtype=torch.long),
+                    #'record_name': record_name,
+                }
+                
+                window_counter += 1
+        else:
+            # for beat_type, signals in dataDict.items():
+            #     for signal in signals:
+            #         self._windows[window_counter] = {
+            #             'signal_fragment' : signal,
+            #             'beatType': beat_type,
+            #             'class' : torch.tensor([BeatType.getBeatClass(beat_type)], dtype=torch.long),
+            #             'category': torch.tensor([BeatType.getBeatCategory(beat_type)], dtype=torch.long),
+            #             #'record_name': record_name,
+            #         }
+            #         window_counter += 1
+            temp_list = []
+            for beat_type, signals in dataDict.items():
+                for signal in signals:
+                    temp_list.append({
+                        'signal_fragment': signal,
+                        'beatType': beat_type,
+                        'class': torch.tensor([BeatType.getBeatClass(beat_type)], dtype=torch.long),
+                        'category': torch.tensor([BeatType.getBeatCategory(beat_type)], dtype=torch.long),
+                        # 'record_name': record_name,
+                    })
+
+            # Shuffle dell'intera lista
+            random.shuffle(temp_list)
+            
+            # Ricopia nella struttura self._windows con nuovo ordine casuale
+            for window_counter, item in enumerate(temp_list):
+                self._windows[window_counter] = item
+      
+        #APP_LOGGER.info(f"Finestre create: {len(self._windows.keys())}")
+        APP_LOGGER.info(f"Finestre create: {window_counter}")
             
           
         # Calcolo dei pesi delle classi
         if self._mode == DatasetMode.TRAINING:
+            APP_LOGGER.info("-"*100)
             APP_LOGGER.info("Calcolo dei pesi")
             classes_number: Dict[int, int] = {}
             
@@ -883,29 +1002,33 @@ class MITBIHDataset(Dataset):
             class_weights = compute_class_weight(class_weight='balanced', classes=unique_classes, y=all_classes)
             self._class_weights = torch.tensor(class_weights, dtype=torch.float32)
             
+            categories_number: Dict[int, int] = {}
+            all_categories = [self._windows[i]['category'].item() for i in self._windows]
+            all_categories = sorted(all_categories)
             
-            all_classes = [self._windows[i]['category'].item() for i in self._windows]
-            all_classes = sorted(all_classes)
-            
-            for n in all_classes:
-                if classes_number.get(n) is None:
-                    classes_number[n] = 1
+            for n in all_categories:
+                if categories_number.get(n) is None:
+                    categories_number[n] = 1
                 else:
-                    classes_number[n] += 1
+                    categories_number[n] += 1
                     
-            for k, v in classes_number.items():
-                p = v/len(all_classes) * 100
+            for k, v in categories_number.items():
+                p = v/len(all_categories) * 100
                 APP_LOGGER.info(f"Categoria {k} ({p:.4f}%): {v}")
             
-            unique_classes = np.unique(all_classes)
-            class_weights = compute_class_weight(class_weight='balanced', classes=unique_classes, y=all_classes)
+            unique_caregories = np.unique(all_categories)
+            
+            
+            
+            class_weights = compute_class_weight(class_weight='balanced', classes=unique_caregories, y=all_categories)
             self._category_weights = torch.tensor(class_weights, dtype=torch.float32)
             
-            
+            APP_LOGGER.info(f"Classi trovate: {unique_classes}")
+            APP_LOGGER.info(f"Catregorie trovate: {unique_caregories}")
             APP_LOGGER.info(f"Pesi delle classi calcolati:\n{self._class_weights}")
             APP_LOGGER.info(f"Pesi delle categorie calcolati:\n{self._category_weights}")
-        
-
+    
+    
     @classmethod    
     def _formatTime(cls, time: str) -> float:        
         parts = time.split(':')

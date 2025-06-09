@@ -1,3 +1,4 @@
+from typing import Tuple
 import torch
 import torch.nn as nn
 import math
@@ -143,20 +144,82 @@ class SimpleECGRegressor(nn.Module):
     
     def forward(self, x):
         return self.net(x)
+    
+    
 
 
-# Example usage
-if __name__ == "__main__":
-    max_token = 500
-    input_dim = 10
-    d_model = 64
-    nhead = 4
-    num_encoder_layers = 3
-    dim_feedforward = 128
-    dropout = 0.1
-    output_dim = 1
 
-    model = Transformer_BPM_Regressor(max_token, input_dim, d_model, nhead, num_encoder_layers, dim_feedforward, dropout, output_dim)
-    sample_input = torch.randn(32, 50, input_dim)  # Batch of 32, sequence length 50, input_dim 10
-    output = model(sample_input)
-    print(output.shape)  # Expected output shape: (32, output_dim)
+class PatchEmbedding1D(nn.Module):
+    def __init__(self, in_channels, patch_size, emb_dim, signal_length):
+        super().__init__()
+        assert signal_length % patch_size == 0, "La lunghezza del segnale deve essere divisibile per il patch size."
+        self.patch_size = patch_size
+        self.num_patches = signal_length // patch_size
+        self.proj = nn.Conv1d(in_channels, emb_dim, kernel_size=patch_size, stride=patch_size)
+        self.cls_token = nn.Parameter(torch.randn(1, 1, emb_dim))
+        self.pos_embed = nn.Parameter(torch.randn(1, self.num_patches + 1, emb_dim))
+
+    def forward(self, x):
+        # x: [B, C, L]
+        x = self.proj(x)                      # [B, D, N]
+        x = x.transpose(1, 2)                 # [B, N, D]
+        B, N, D = x.shape
+        cls_token = self.cls_token.expand(B, -1, -1)  # [B, 1, D]
+        x = torch.cat((cls_token, x), dim=1)          # [B, N+1, D]
+        x = x + self.pos_embed                       # Positional embedding
+        return x
+
+class TransformerEncoderBlock(nn.Module):
+    def __init__(self, emb_dim, num_heads, mlp_dim, dropout=0.1):
+        super().__init__()
+        self.norm1 = nn.LayerNorm(emb_dim)
+        self.attn = nn.MultiheadAttention(emb_dim, num_heads, dropout=dropout, batch_first=True)
+        self.norm2 = nn.LayerNorm(emb_dim)
+        self.mlp = nn.Sequential(
+            nn.Linear(emb_dim, mlp_dim),
+            nn.GELU(),
+            nn.Dropout(dropout),
+            nn.Linear(mlp_dim, emb_dim),
+            nn.Dropout(dropout)
+        )
+
+    def forward(self, x):
+        x = x + self.attn(self.norm1(x), self.norm1(x), self.norm1(x))[0]
+        x = x + self.mlp(self.norm2(x))
+        return x
+
+
+class ViT1D(nn.Module):
+    def __init__(
+        self,
+        signal_length: int,
+        patch_size: int = 16,
+        in_channels: int = 1,
+        emb_dim: int = 128,
+        depth: int = 6,
+        num_heads: int = 8,
+        mlp_dim: int = 256,
+        classes_output_dim: int = 1,
+        categories_output_dim: int = 1,
+        dropout: float = 0.1
+    ):
+        super().__init__()
+        self.patch_embed = PatchEmbedding1D(in_channels, patch_size, emb_dim, signal_length)
+
+        self.encoder = nn.Sequential(*[
+            TransformerEncoderBlock(emb_dim, num_heads, mlp_dim, dropout)
+            for _ in range(depth)
+        ])
+
+        self.norm = nn.LayerNorm(emb_dim)
+        self.head1 = nn.Linear(emb_dim, classes_output_dim)
+        self.head2 = nn.Linear(emb_dim, categories_output_dim)
+
+    def forward(self, x) -> Tuple[torch.Tensor, torch.Tensor]:
+        x = self.patch_embed(x)    # [B, N+1, D]
+        x = self.encoder(x)        # [B, N+1, D]
+        x = self.norm(x)           # [B, N+1, D]
+        cls_token = x[:, 0]        # [B, D]
+        x1 = self.head1(cls_token) 
+        x2 = self.head2(cls_token) 
+        return x1, x2

@@ -8,6 +8,7 @@ pillow==11.0.0
 python-dotenv==1.0.1
 scikit-learn==1.5.1
 scipy==1.13.1
+imbalanced-learn
 seaborn==0.13.2
 pipreqs==0.5.0
 rasterio==1.4.1
