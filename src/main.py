@@ -1,6 +1,7 @@
 import argparse
+from enum import Enum, auto
 import math
-from typing import Final, List
+from typing import Final, List, Tuple
 from tqdm.auto import tqdm
 import torch.optim as optim
 import torch
@@ -19,7 +20,7 @@ import numpy as np
 
 from NN_component.VisionTransformer import ViT1D
 from NN_component.VisionTransformer2 import ViT1D_2
-from NN_component.resNet import ResNet1D, ResNet1D_50
+from NN_component.resNet import *
 from dataset.dataset import DatasetChannels, DatasetDataMode, DatasetMode, MITBIHDataset, BeatType
 from dataset.datamodule import Mitbih_datamodule
 import os
@@ -28,6 +29,14 @@ from NN_component.weightedMSELoss import WeightedMSELoss
 from NN_component.model import SimpleECGRegressor, Transformer_BPM_Regressor
 from setting import *
 import setting
+
+
+# Lista per tenere traccia dei migliori checkpoint (path e loss)
+top_checkpoints: list = []
+
+class TRAINING_MODE(Enum):
+    CLASSES = auto()
+    CATEGORIES = auto()
 
 
 def check_pytorch_cuda() -> bool:
@@ -291,6 +300,7 @@ def plot_confusion_matrix(cm, class_labels, epoch, output_dir, normalized=True, 
     plt.close()
 
 def training_classification(
+    training_mode: TRAINING_MODE,
     device: torch.device, 
     dataModule: Mitbih_datamodule, 
     model: nn.Module, 
@@ -341,23 +351,23 @@ def training_classification(
     
     optimizer = optim.Adam(model.parameters(), lr=start_lr)
     
-    scheduler = lr_scheduler.ReduceLROnPlateau(
-        optimizer,
-        mode='min',         
-        factor=0.6,         
-        patience=5,         
-        threshold=0.0001,   
-        threshold_mode='rel' 
-    )
-    
     # scheduler = lr_scheduler.ReduceLROnPlateau(
     #     optimizer,
     #     mode='min',         
-    #     factor=0.95,         
-    #     patience=1,         
+    #     factor=0.6,         
+    #     patience=5,         
     #     threshold=0.0001,   
     #     threshold_mode='rel' 
     # )
+    
+    scheduler = lr_scheduler.ReduceLROnPlateau(
+        optimizer,
+        mode='min',         
+        factor=0.95,         
+        patience=0,         
+        threshold=0.0001,   
+        threshold_mode='rel' 
+    )
     
     #scheduler = lr_scheduler.StepLR(optimizer, step_size=0, gamma=0.955)
     
@@ -382,169 +392,199 @@ def training_classification(
             APP_LOGGER.info(f"Epoca {epoch+1}/{num_epochs}")
 
             # --- Fase di Training ---
-            model.train()
-            total_train_loss = 0
+            total_train_loss: float = 0.0
+            total_val_loss:float = 0.0
             
             train_class_preds = []
             train_class_targets = []
             train_category_preds = []
             train_category_targets = []
-
-            train_loop = tqdm(train_dataloader, leave=False, desc=f"Training Epoca {epoch+1}")
-            for batch_idx, (signal, class_labels, category_labels) in enumerate(train_loop):
-                signal = signal.to(device)
-                class_labels = class_labels.squeeze(1).long().to(device)
-                category_labels = category_labels.squeeze(1).long().to(device)
-                
-                optimizer.zero_grad()
-                outputs = model(signal) # Outputs are logits
-                
-                class_loss = class_loss_function(outputs[0], class_labels)
-                category_loss = category_loss_function(outputs[1], category_labels) # Assuming model outputs can be used for category directly or needs adjustment
-                
-                # Combine losses
-                #loss = class_loss + category_loss
-                loss = category_loss
-                
-                loss.backward()
-                optimizer.step()
-
-                total_train_loss += loss.item()
-                
-                # Collect predictions and true labels for classes
-                class_preds = torch.argmax(outputs[0], dim=1)
-                category_preds = torch.argmax(outputs[1], dim=1)
-                
-                valid_class_indices = (class_labels != class_to_ignore)
-                train_class_preds.extend(class_preds[valid_class_indices].cpu().numpy())
-                train_class_targets.extend(class_labels[valid_class_indices].cpu().numpy())
-
-                # Collect predictions and true labels for categories
-                # For categories, we need to map class predictions to categories
-                # This assumes SampleType.getBeatCategory can be applied to the predicted class index
-                #category_preds = torch.tensor([SampleType.getBeatCategory(SampleType.mapBeatCategory_to_Label(p.item())) for p in category_preds]).to(device)
-                valid_category_indices = (category_labels != category_to_ignore)
-                train_category_preds.extend(category_preds[valid_category_indices].cpu().numpy())
-                train_category_targets.extend(category_labels[valid_category_indices].cpu().numpy())
-                
-                train_loop.set_description(f"Training Epoca {epoch+1} Loss: {loss.item():.4f} lr: {scheduler.get_last_lr()[0]:.8f}")
-
-            avg_train_loss = total_train_loss / len(train_dataloader) # Divide by number of batches
-
-            # --- Fase di Validation ---
-            model.eval()
-            total_val_loss:float = 0.0
             
             val_class_preds = []
             val_class_targets = []
             val_category_preds = []
             val_category_targets = []
 
-            val_loop = tqdm(val_dataloader, leave=False, desc=f"Validation Epoca {epoch+1}")
-            with torch.no_grad():
-                for batch_idx, (signal, class_labels, category_labels) in enumerate(val_loop):
+            APP_LOGGER.info("Training in modalità Categorie")
+            model.train()
+            train_loop = tqdm(train_dataloader, leave=False, desc=f"Training Epoca {epoch+1}")
+            
+            if training_mode == TRAINING_MODE.CATEGORIES:
+                for batch_idx, (signal, class_labels, category_labels) in enumerate(train_loop):
                     signal = signal.to(device)
-                    class_labels = class_labels.squeeze(1).long().to(device)
                     category_labels = category_labels.squeeze(1).long().to(device)
                     
-                    outputs = model(signal)
+                    optimizer.zero_grad()
+                    outputs = model(signal) # Outputs are logits
                     
-                    class_loss = class_loss_function(outputs[0], class_labels)
-                    category_loss = category_loss_function(outputs[1], category_labels)
-                    
-                    
-                    #loss = class_loss + category_loss
-                    loss = category_loss
-                    total_val_loss += loss.item()
-                    
-                    if math.isnan(loss):
-                        print(loss, category_loss, total_val_loss, category_labels, torch.argmax(outputs[1], dim=1))
-                    
-                    #print(f"{class_loss} {category_loss} {loss}")
+                    loss = category_loss_function(outputs, category_labels) # Assuming model outputs can be used for category directly or needs adjustment
+                    loss.backward()
+                    optimizer.step()
+
+                    total_train_loss += loss.item()
                     
                     # Collect predictions and true labels for classes
-                    class_preds = torch.argmax(outputs[0], dim=1)
-                    valid_class_indices = (class_labels != class_to_ignore)
-                    val_class_preds.extend(class_preds[valid_class_indices].cpu().numpy())
-                    val_class_targets.extend(class_labels[valid_class_indices].cpu().numpy())
-
-                    # Collect predictions and true labels for categories
-                    #category_preds = torch.tensor([SampleType.getBeatCategory(SampleType.mapBeatClass_to_Label(p.item())) for p in class_preds]).to(device)
-                    
-                    category_preds  = torch.argmax(outputs[1], dim=1)
+                    category_preds = torch.argmax(outputs, dim=1)
                     valid_category_indices = (category_labels != category_to_ignore)
-                    val_category_preds.extend(category_preds[valid_category_indices].cpu().numpy())
-                    val_category_targets.extend(category_labels[valid_category_indices].cpu().numpy())
+                    train_category_preds.extend(category_preds[valid_category_indices].cpu().numpy())
+                    train_category_targets.extend(category_labels[valid_category_indices].cpu().numpy())
+                    train_loop.set_description(f"Training Epoca {epoch+1} Loss: {loss.item():.4f} lr: {scheduler.get_last_lr()[0]:.8f}")
+
+            elif training_mode == TRAINING_MODE.CLASSES:
+                for batch_idx, (signal, class_labels, category_labels) in enumerate(train_loop):
+                    signal = signal.to(device)
+                    class_labels = class_labels.squeeze(1).long().to(device)
+            
+                    optimizer.zero_grad()
+                    outputs = model(signal)
+                    loss = class_loss_function(outputs, class_labels)
+                    loss.backward()
+                    optimizer.step()
                     
-                    val_loop.set_description(f"Validation Epoca {epoch+1} Loss: {loss.item():.4f}")
+                    total_train_loss += loss.item()
+                    
+                    # Collect predictions and true labels for classes
+                    class_preds = torch.argmax(outputs, dim=1)
+                    valid_class_indices = (class_labels != class_to_ignore)
+                    train_class_preds.extend(class_preds[valid_class_indices].cpu().numpy())
+                    train_class_targets.extend(class_labels[valid_class_indices].cpu().numpy())
+                    train_loop.set_description(f"Training Epoca {epoch+1} Loss: {loss.item():.4f} lr: {scheduler.get_last_lr()[0]:.8f}")
+            else: 
+                raise ValueError("training_mode deve essere TRAINING_MODE.CLASSES o TRAINING_MODE.CATEGORIES")
+            
+            
+            avg_train_loss = total_train_loss / len(train_dataloader) # Divide by number of batches
+
+            # --- Fase di Validation ---
+            model.eval()
+            
+            val_loop = tqdm(val_dataloader, leave=False, desc=f"Validation Epoca {epoch+1}")
+            with torch.no_grad():
+                
+                if training_mode == TRAINING_MODE.CATEGORIES:  
+                    for batch_idx, (signal, class_labels, category_labels) in enumerate(val_loop):
+                        signal = signal.to(device)
+                        category_labels = category_labels.squeeze(1).long().to(device)
+                        outputs = model(signal)
+                        
+                        loss = category_loss_function(outputs, category_labels)
+                        total_val_loss += loss.item()
+                        
+                        if math.isnan(loss):
+                            print(loss, loss, total_val_loss, category_labels, torch.argmax(outputs[1], dim=1))
+                        
+                        # Collect predictions and true labels for categories
+                        category_preds  = torch.argmax(outputs, dim=1)
+                        valid_category_indices = (category_labels != category_to_ignore)
+                        val_category_preds.extend(category_preds[valid_category_indices].cpu().numpy())
+                        val_category_targets.extend(category_labels[valid_category_indices].cpu().numpy())
+                        
+                        val_loop.set_description(f"Validation Epoca {epoch+1} Loss: {loss.item():.4f}")
+
+                elif training_mode == TRAINING_MODE.CLASSES:
+                    for batch_idx, (signal, class_labels, category_labels) in enumerate(val_loop):
+                        signal = signal.to(device)
+                        class_labels = class_labels.squeeze(1).long().to(device)
+                        outputs = model(signal)
+                        
+                        loss = class_loss_function(outputs, class_labels)
+                        total_val_loss += loss.item()
+                        
+                        if math.isnan(loss):
+                            print(loss, loss, total_val_loss, category_labels, torch.argmax(outputs[1], dim=1))
+                        
+                        # Collect predictions and true labels for classes
+                        class_preds = torch.argmax(outputs, dim=1)
+                        valid_class_indices = (class_labels != class_to_ignore)
+                        val_class_preds.extend(class_preds[valid_class_indices].cpu().numpy())
+                        val_class_targets.extend(class_labels[valid_class_indices].cpu().numpy())
+
+                        val_loop.set_description(f"Validation Epoca {epoch+1} Loss: {loss.item():.4f}")
+
+
 
             avg_val_loss = total_val_loss / len(val_dataloader) # Divide by number of batches
 
-            # Calculate metrics for Classes
-            unique_class_labels_for_metrics = [i for i in range(classes_number) if i != class_to_ignore]
-            cm_class = confusion_matrix(val_class_targets, val_class_preds, labels=unique_class_labels_for_metrics)
-            #plot_confusion_matrix(cm_class, [BeatType.mapBeatClass_to_Label(i) for i in unique_class_labels_for_metrics], epoch + 1, confusion_matrix_dir)
-
-            accuracy_class = accuracy_score(val_class_targets, val_class_preds)
-            f1_macro_class = f1_score(val_class_targets, val_class_preds, average='macro', labels=unique_class_labels_for_metrics, zero_division=0)
-            precision_macro_class = precision_score(val_class_targets, val_class_preds, average='macro', labels=unique_class_labels_for_metrics, zero_division=0)
-            recall_macro_class = f1_score(val_class_targets, val_class_preds, average='macro', labels=unique_class_labels_for_metrics, zero_division=0) 
-
-            # Calculate metrics for Categories
-            unique_category_labels_for_metrics = [i for i in range(categories_number) if i != category_to_ignore]
-            cm_category = confusion_matrix(val_category_targets, val_category_preds, labels=unique_category_labels_for_metrics)
-            #plot_confusion_matrix(cm_category, [BeatType.mapBeatCategory_to_Label(i) for i in unique_category_labels_for_metrics], epoch + 1, os.path.join(confusion_matrix_dir, "category_confusion_matrix")) # Save category CM in a subfolder or with a different name
-
-            if ((epoch+1) % 5 == 0 and epoch != 0) or (avg_val_loss < best_val_loss):
-
-                plot_confusion_matrix(
-                    cm_class,
-                    [BeatType.mapBeatClass_to_Label(i) for i in unique_class_labels_for_metrics],
-                    epoch + 1,
-                    confusion_matrix_dir_class,
-                    normalized=True,
-                    filename_prefix=f"epoch_{epoch+1}_class_confusion_matrix"
-                )
-
-                plot_confusion_matrix(
-                    cm_category,
-                    [BeatType.mapBeatCategory_to_Label(i) for i in unique_category_labels_for_metrics],
-                    epoch + 1,
-                    confusion_matrix_dir_category,
-                    normalized=True,
-                    filename_prefix=f"epoch_{epoch+1}_category_confusion_matrix"
-                )
-
-            accuracy_category = accuracy_score(val_category_targets, val_category_preds)
-            f1_macro_category = f1_score(val_category_targets, val_category_preds, average='macro', labels=unique_category_labels_for_metrics, zero_division=0)
-            precision_macro_category = precision_score(val_category_targets, val_category_preds, average='macro', labels=unique_category_labels_for_metrics, zero_division=0)
-            recall_macro_category = f1_score(val_category_targets, val_category_preds, average='macro', labels=unique_category_labels_for_metrics, zero_division=0)
 
             APP_LOGGER.info('-'*100)
             APP_LOGGER.info(f"Risultati Epoca {epoch+1}: ")
             APP_LOGGER.info(f"Training Loss = {avg_train_loss:.4f}")
             APP_LOGGER.info(f"Validation Loss = {avg_val_loss:.4f}")
-            APP_LOGGER.info(f"Class Metrics    - Accuracy: {accuracy_class:.4f}, F1-Macro: {f1_macro_class:.4f}, Precision-Macro: {precision_macro_class:.4f}, Recall-Macro: {recall_macro_class:.4f}")
-            APP_LOGGER.info(f"Category Metrics - Accuracy: {accuracy_category:.4f}, F1-Macro: {f1_macro_category:.4f}, Precision-Macro: {precision_macro_category:.4f}, Recall-Macro: {recall_macro_category:.4f}")
+            
+            # Calculate metrics for Classes
+            if training_mode == TRAINING_MODE.CLASSES:
+                unique_class_labels_for_metrics = [i for i in range(classes_number) if i != class_to_ignore]
+                cm_class = confusion_matrix(val_class_targets, val_class_preds, labels=unique_class_labels_for_metrics)
+                #plot_confusion_matrix(cm_class, [BeatType.mapBeatClass_to_Label(i) for i in unique_class_labels_for_metrics], epoch + 1, confusion_matrix_dir)
+
+                accuracy_class = accuracy_score(val_class_targets, val_class_preds)
+                f1_macro_class = f1_score(val_class_targets, val_class_preds, average='macro', labels=unique_class_labels_for_metrics, zero_division=0)
+                precision_macro_class = precision_score(val_class_targets, val_class_preds, average='macro', labels=unique_class_labels_for_metrics, zero_division=0)
+                recall_macro_class = f1_score(val_class_targets, val_class_preds, average='macro', labels=unique_class_labels_for_metrics, zero_division=0) 
+
+                log_file.write(f"{epoch+1}, {optimizer.param_groups[0]['lr']:.6f}, {avg_train_loss:.6f}, {avg_val_loss:.6f}, {accuracy_class:.6f}, {f1_macro_class:.6f}, {precision_macro_class:.6f}, {recall_macro_class:.6f}, -, -, -, -\n")
+                log_file.flush()
+                APP_LOGGER.info(f"Class Metrics    - Accuracy: {accuracy_class:.4f}, F1-Macro: {f1_macro_class:.4f}, Precision-Macro: {precision_macro_class:.4f}, Recall-Macro: {recall_macro_class:.4f}")
+            
+
+            else:
+                # Calculate metrics for Categories
+                unique_category_labels_for_metrics = [i for i in range(categories_number) if i != category_to_ignore]
+                cm_category = confusion_matrix(val_category_targets, val_category_preds, labels=unique_category_labels_for_metrics)
+                #plot_confusion_matrix(cm_category, [BeatType.mapBeatCategory_to_Label(i) for i in unique_category_labels_for_metrics], epoch + 1, os.path.join(confusion_matrix_dir, "category_confusion_matrix")) # Save category CM in a subfolder or with a different name
+
+                accuracy_category = accuracy_score(val_category_targets, val_category_preds)
+                f1_macro_category = f1_score(val_category_targets, val_category_preds, average='macro', labels=unique_category_labels_for_metrics, zero_division=0)
+                precision_macro_category = precision_score(val_category_targets, val_category_preds, average='macro', labels=unique_category_labels_for_metrics, zero_division=0)
+                recall_macro_category = f1_score(val_category_targets, val_category_preds, average='macro', labels=unique_category_labels_for_metrics, zero_division=0)
+            
+                log_file.write(f"{epoch+1}, {optimizer.param_groups[0]['lr']:.6f}, {avg_train_loss:.6f}, {avg_val_loss:.6f}, -, -, -, -, {accuracy_category:.6f}, {f1_macro_category:.6f}, {precision_macro_category:.6f}, {recall_macro_category:.6f}\n")
+                log_file.flush()
+                APP_LOGGER.info(f"Category Metrics - Accuracy: {accuracy_category:.4f}, F1-Macro: {f1_macro_category:.4f}, Precision-Macro: {precision_macro_category:.4f}, Recall-Macro: {recall_macro_category:.4f}")
+            
+
+            if ((epoch+1) % 5 == 0 and epoch != 0) or (avg_val_loss < best_val_loss):
+
+                if training_mode == TRAINING_MODE.CLASSES:
+                    plot_confusion_matrix(
+                        cm_class,
+                        [BeatType.mapBeatClass_to_Label(i) for i in unique_class_labels_for_metrics],
+                        epoch + 1,
+                        confusion_matrix_dir_class,
+                        normalized=True,
+                        filename_prefix=f"epoch_{epoch+1}_class_confusion_matrix"
+                    )
+                if training_mode == TRAINING_MODE.CATEGORIES:
+                    plot_confusion_matrix(
+                        cm_category,
+                        [BeatType.mapBeatCategory_to_Label(i) for i in unique_category_labels_for_metrics],
+                        epoch + 1,
+                        confusion_matrix_dir_category,
+                        normalized=True,
+                        filename_prefix=f"epoch_{epoch+1}_category_confusion_matrix"
+                    )
             APP_LOGGER.info('-'*100)
+            
 
             scheduler.step(avg_val_loss)
             #scheduler.step(epoch)
 
-            log_file.write(f"{epoch+1}, {optimizer.param_groups[0]['lr']:.6f}, {avg_train_loss:.6f}, {avg_val_loss:.6f}, {accuracy_class:.6f}, {f1_macro_class:.6f}, {precision_macro_class:.6f}, {recall_macro_class:.6f}, {accuracy_category:.6f}, {f1_macro_category:.6f}, {precision_macro_category:.6f}, {recall_macro_category:.6f}\n")
-            log_file.flush()
-
+            # --- Gestione Checkpoint ---
             if avg_val_loss < best_val_loss:
                 best_val_loss = avg_val_loss
-                checkpoint_path = os.path.join(checkpoint_dir, f"Epoch[{epoch+1}]_Loss[{avg_val_loss:.4f}].pth")
-                APP_LOGGER.info(f"Validation loss migliorata ({avg_val_loss:.4f}). Salvataggio modello in {checkpoint_path}")
-                torch.save({
-                    'epoch': epoch,
-                    'model_state_dict': model.state_dict(),
-                    'optimizer_state_dict': optimizer.state_dict(),
-                    'scheduler_state_dict': scheduler.state_dict(), 
-                    'loss': avg_val_loss,
-                }, checkpoint_path)
+                # checkpoint_path = os.path.join(checkpoint_dir, f"Epoch[{epoch+1}]_Loss[{avg_val_loss:.4f}].pth")
+                # APP_LOGGER.info(f"Validation loss migliorata ({avg_val_loss:.4f}). Salvataggio modello in {checkpoint_path}")
+                # torch.save({
+                #     'epoch': epoch,
+                #     'model_state_dict': model.state_dict(),
+                #     'optimizer_state_dict': optimizer.state_dict(),
+                #     'scheduler_state_dict': scheduler.state_dict(), 
+                #     'loss': avg_val_loss,
+                # }, checkpoint_path)
+                APP_LOGGER.info(f"Validation loss migliorata ({avg_val_loss:.4f}). Salvataggio checkpoint...")
+                top_checkpoints = save_top_checkpoints(
+                    avg_val_loss, epoch, model, optimizer, scheduler, checkpoint_dir, top_k=3
+                )
 
     APP_LOGGER.info("Addestramento completato.")
     
@@ -556,6 +596,37 @@ def training_classification(
         'scheduler_state_dict': scheduler.state_dict(), 
         'loss': avg_val_loss,
     }, checkpoint_path)
+
+def save_top_checkpoints(avg_val_loss, epoch, model, optimizer, scheduler, checkpoint_dir, top_k=3):
+    global top_checkpoints  # Per mantenere stato tra epoche
+
+    checkpoint_path = os.path.join(
+        checkpoint_dir, f"Epoch[{epoch+1}]_Loss[{avg_val_loss:.4f}].pth"
+    )
+
+    # Salvataggio del nuovo checkpoint
+    torch.save({
+        'epoch': epoch,
+        'model_state_dict': model.state_dict(),
+        'optimizer_state_dict': optimizer.state_dict(),
+        'scheduler_state_dict': scheduler.state_dict(),
+        'loss': avg_val_loss,
+    }, checkpoint_path)
+
+    # Aggiungi il nuovo checkpoint alla lista
+    top_checkpoints.append((avg_val_loss, checkpoint_path))
+
+    # Ordina la lista in base alla loss (minore è meglio)
+    top_checkpoints = sorted(top_checkpoints, key=lambda x: x[0])
+
+    # Se abbiamo più di top_k checkpoint, rimuovi quelli peggiori
+    if len(top_checkpoints) > top_k:
+        worst_checkpoint = top_checkpoints.pop(-1)  # Peggiore (ultimo)
+        if os.path.exists(worst_checkpoint[1]):
+            os.remove(worst_checkpoint[1])  # Elimina file dal disco
+
+    return top_checkpoints  # opzionale, per debug/logging
+
 
 def test_model(
     device: torch.device, 
@@ -749,11 +820,11 @@ def main():
     # Parametri per la struttura del modello Transformer
    
 
-    parser.add_argument("--num_layers", type=int, default=NUM_LAYERS, help=f"Numero di strati del Transformer (default: {NUM_LAYERS})")
-    parser.add_argument("--d_model", type=int, default=D_MODEL, help=f"Dimensione del modello (default: {D_MODEL})")
-    parser.add_argument("--num_heads", type=int, default=NUM_HEADS, help=f"Numero di teste di attenzione (default: {NUM_HEADS})")
-    parser.add_argument("--dff", type=int, default=DFF, help=f"Dimensione del feed-forward (default: {DFF})")
-    parser.add_argument("--dropout_rate", type=float, default=DROPOUT_RATE, help=f"Tasso di dropout (default: {DROPOUT_RATE})")
+    # parser.add_argument("--num_layers", type=int, default=NUM_LAYERS, help=f"Numero di strati del Transformer (default: {NUM_LAYERS})")
+    # parser.add_argument("--d_model", type=int, default=D_MODEL, help=f"Dimensione del modello (default: {D_MODEL})")
+    # parser.add_argument("--num_heads", type=int, default=NUM_HEADS, help=f"Numero di teste di attenzione (default: {NUM_HEADS})")
+    # parser.add_argument("--dff", type=int, default=DFF, help=f"Dimensione del feed-forward (default: {DFF})")
+    # parser.add_argument("--dropout_rate", type=float, default=DROPOUT_RATE, help=f"Tasso di dropout (default: {DROPOUT_RATE})")
     
     # Percorsi e configurazioni
     parser.add_argument("--dataset_path", type=str, default=DATASET_PATH, help=f"Percorso del dataset (default: {DATASET_PATH})")
@@ -780,14 +851,24 @@ def main():
     sample_per_window = 280 #int(sample_rate*0.6),#args.window_size,
     
     
-    models: List[nn.Module] = [
+    models: List[Tuple[nn.Module, TRAINING_MODE]] = [
     
-        ResNet1D_50(
-            in_channels_signal=channels_enum.value, 
-            classes_output_dim=BeatType.num_classes(),
-            categories_output_dim=BeatType.num_of_category()
+        (
+            ResNet1D_18_Categories(
+                in_channels_signal=channels_enum.value,
+                categories_output_dim=BeatType.num_of_category()
+            ),
+            TRAINING_MODE.CATEGORIES
         ),
+        (
+            ResNet1D_18_Classes(
+                in_channels_signal=channels_enum.value,
+                classes_output_dim=BeatType.num_classes()
+            ),
+            TRAINING_MODE.CLASSES  
+        )
         
+
         # ViT1D(
         #     signal_length = sample_per_window,
         #     patch_size = 12,
@@ -825,32 +906,7 @@ def main():
     )
     
     
-    # dataset = dataModule.get_train_dataset()
-    # path = os.path.join(setting.DATA_FOLDER_PATH,'BEATS', f'plot.png')
-    # dataset.plot_class_distribution(path, False)
-    # dataset.plot_record_with_annotations('101','plot2.png', 60 )
-    
-    #dataModule.print_all_window(columNumber=0, save_path=path, dataset=dataset)
-    # for i in range(len(dataset)):
-    #     path = os.path.join(setting.DATA_FOLDER_PATH,'BEATS', f'test{i}_plot.png')
-    #     dataModule.print_window(path, dataset, i)
-    
-    
-    
-    
-    #dataModule.print_all_training_ecg_signals(os.path.join(setting.DATA_FOLDER_PATH, 'training_plots'))
-    #dataModule.print_training_plot_bpm_distribution(os.path.join(setting.DATA_FOLDER_PATH, 'training_plots'))
-    #dataModule.print_validation_plot_bpm_distribution(os.path.join(setting.DATA_FOLDER_PATH, 'validation_plots'))
-    
-    #dataModule.print_training_record('207',os.path.join(setting.DATA_FOLDER_PATH, 'test_plot'))
-    
-    
-   
-    #model = ResNet1D(in_channels_signal=2, classes_output_dim=BeatType.num_classes(),categories_output_dim=BeatType.num_of_category())
-    
-    
 
-    
     # model = Transformer_BPM_Regressor(
     #     input_samples_num=args.window_size*sample_rate,
     #     in_channels=2,
@@ -872,11 +928,12 @@ def main():
     device: torch.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     APP_LOGGER.info(f"Utilizzando dispositivo: {device}")
     
-    for model in models:
+    for (model, mode) in models:
         # APP_LOGGER.info("Architettura del Modello:")
-        # APP_LOGGER.info(model)
+        APP_LOGGER.info(f"Training del Modello {model.__class__.__name__} per {mode}")
         
         training_classification(
+            training_mode= mode,
             device = device,
             dataModule = dataModule,
             model = model,
