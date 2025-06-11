@@ -33,7 +33,7 @@ RANDOM_SEED: Final[int] = 42
 # Percorsi e configurazioni
 #============================= training =============================#
 NUM_EPOCHS: Final[int] = 10
-LEARNING_RATE: Final[float] = 0.001
+LEARNING_RATE: Final[float] = 0.0005
 
 AVG_VALIDATION_LOSS_LABEL_NAME: Final[str] = 'avg_loss'
 

@@ -387,10 +387,10 @@ def training_classification(
 
     
     with open(training_log_path, 'a') as log_file:
-        str_temp = f"{'*'}{' '*39} {model.__class__.__name__.upper()} TRAINING {'*'}{' '*39}\n"
+        str_temp = f"{'*'}{' '*39} {model.__class__.__name__.upper()} TRAINING {' '*39}{'*'}\n"
         log_file.write(f"\n{'*'*len(str_temp)}\n")
         log_file.write(str_temp)
-        log_file.write(f"\n{'*'*len(str_temp)}\n")
+        log_file.write(f"{'*'*len(str_temp)}\n")
         log_file.write("Epoch, lr, Train_Loss, Val_Loss, Class_Accuracy, Class_F1_Macro, Class_Precision_Macro, Class_Recall_Macro, Category_Accuracy, Category_F1_Macro, Category_Precision_Macro, Category_Recall_Macro\n")
         log_file.flush()  # Assicurati che i dati vengano scritti immediatamente sul disco
         
@@ -830,7 +830,7 @@ def main():
     parser.add_argument("--output_path", type=str, default=OUTPUT_PATH, help=f"Percorso di output per i risultati (default: {OUTPUT_PATH})")
     parser.add_argument("--num_epochs", type=int, default=NUM_EPOCHS, help=f"Numero di epoche di training (default: {NUM_EPOCHS})")
     parser.add_argument("--mode", type=str, choices=["training", "test"], default="training", help="Modalità di esecuzione: 'training' o 'test' (default: 'training')")
-    parser.add_argument("--learning_rate", type=float, default=LEARNING_RATE, help=f"Valore iniziale del learning rate (default: {LEARNING_RATE})")
+    parser.add_argument("--lr", type=float, default=LEARNING_RATE, help=f"Valore iniziale del learning rate (default: {LEARNING_RATE})")
 
     # Configurazioni del segnale
     parser.add_argument("--window_size", type=int, default=WINDOW_SIZE, help=f"Dimensione della finestra del segnale in secondi (default: {WINDOW_SIZE})")
@@ -851,15 +851,43 @@ def main():
     
     models: List[Tuple[nn.Module, TRAINING_MODE]] = [
     
+        # (
+        #     ResNet1D_18_Categories(
+        #         in_channels_signal=channels_enum.value,
+        #         categories_output_dim=BeatType.num_of_category()
+        #     ),
+        #     TRAINING_MODE.CATEGORIES
+        # ),
         (
-            ResNet1D_18_Categories(
+            ResNet1D_18_Classes(
+                in_channels_signal=channels_enum.value,
+                classes_output_dim=BeatType.num_classes()
+            ),
+            TRAINING_MODE.CLASSES  
+        ),
+        (
+            ResNet1D_34_Categories(
                 in_channels_signal=channels_enum.value,
                 categories_output_dim=BeatType.num_of_category()
             ),
             TRAINING_MODE.CATEGORIES
         ),
         (
-            ResNet1D_18_Classes(
+            ResNet1D_34_Classes(
+                in_channels_signal=channels_enum.value,
+                classes_output_dim=BeatType.num_classes()
+            ),
+            TRAINING_MODE.CLASSES  
+        ),
+        (
+            ResNet1D_50_Categories(
+                in_channels_signal=channels_enum.value,
+                categories_output_dim=BeatType.num_of_category()
+            ),
+            TRAINING_MODE.CATEGORIES
+        ),
+        (
+            ResNet1D_50_Classes(
                 in_channels_signal=channels_enum.value,
                 classes_output_dim=BeatType.num_classes()
             ),
@@ -931,6 +959,7 @@ def main():
         APP_LOGGER.info(f"Training del Modello {model.__class__.__name__} per {mode}")
         
         training_classification(
+            start_lr=args.lr,
             training_mode= mode,
             device = device,
             dataModule = dataModule,

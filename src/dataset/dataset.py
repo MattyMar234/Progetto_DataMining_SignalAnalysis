@@ -252,6 +252,7 @@ class MITBIHDataset(Dataset):
     __USE_SMOTE: bool = True
     # Dizionario per memorizzare il segnale di ogni record
     _ALL_SIGNALS_DICT: Dict[str, torch.Tensor] = {}
+    _WINDOWS: Dict[int, Dict[str, Any]] = {}
     
     # Dizionario per memorizzare le annotazioni di ogni segnale
     _ALL_SIGNALS_BEAT_ANNOTATIONS_DICT: Dict[str, List[Dict[str, Any]]] = {}
@@ -867,12 +868,14 @@ class MITBIHDataset(Dataset):
                     
         finally:
             progress_bar.close()  
+            
+        APP_LOGGER.info("Valori di ogni classe:")
+        for beat_type, signals in dataDict.items():
+            APP_LOGGER.info(f"{beat_type.value[0]}: {len(signals)} segnali")
         
         if self._mode == DatasetMode.TRAINING and MITBIHDataset.__USE_SMOTE:
             APP_LOGGER.info(f"Applicazione della SMOTE")   
-            APP_LOGGER.info("Dati prima della SMOTE:")
-            for beat_type, signals in dataDict.items():
-                APP_LOGGER.info(f"{beat_type.value[0]}: {len(signals)} segnali")
+            
             
             X = []
             y = []
