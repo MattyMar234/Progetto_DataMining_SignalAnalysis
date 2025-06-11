@@ -316,6 +316,10 @@ def training_classification(
     assert checkpoint_dir is not None, "Cartella dei checkpoint non specificata"
     assert confusion_matrix_dir is not None, "Cartella per le matrici di confusione non specificata"
     
+    global top_checkpoints
+    top_checkpoints = []  # Inizializza la lista dei migliori checkpoint
+
+    
     str_s = f"{'*'*40} TRAINING {'*'*40}"
     APP_LOGGER.info('*'*len(str_s))
     APP_LOGGER.info(str_s)
@@ -349,7 +353,8 @@ def training_classification(
     class_loss_function = nn.CrossEntropyLoss(weight=class_weights, ignore_index=class_to_ignore)
     category_loss_function = nn.CrossEntropyLoss(weight=category_weights, ignore_index=category_to_ignore)
     
-    optimizer = optim.Adam(model.parameters(), lr=start_lr)
+    optimizer = optim.Adam(model.parameters(), lr=start_lr, weight_decay=1e-3)
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=num_epochs, eta_min=1e-6)
     
     # scheduler = lr_scheduler.ReduceLROnPlateau(
     #     optimizer,
@@ -360,14 +365,14 @@ def training_classification(
     #     threshold_mode='rel' 
     # )
     
-    scheduler = lr_scheduler.ReduceLROnPlateau(
-        optimizer,
-        mode='min',         
-        factor=0.95,         
-        patience=0,         
-        threshold=0.0001,   
-        threshold_mode='rel' 
-    )
+    # scheduler = lr_scheduler.ReduceLROnPlateau(
+    #     optimizer,
+    #     mode='min',         
+    #     factor=0.95,         
+    #     patience=0,         
+    #     threshold=0.0001,   
+    #     threshold_mode='rel' 
+    # )
     
     #scheduler = lr_scheduler.StepLR(optimizer, step_size=0, gamma=0.955)
     
@@ -381,12 +386,13 @@ def training_classification(
             APP_LOGGER.info(f"Riprendi l'addestramento dall'epoca {start_epoch} con validation loss {best_val_loss:.4f}")
 
     
-
     with open(training_log_path, 'a') as log_file:
-        if os.stat(training_log_path).st_size != 0:
-            log_file.write(f"\n{'='*80}\n")
-
+        str_temp = f"{'*'}{' '*39} {model.__class__.__name__.upper()} TRAINING {'*'}{' '*39}\n"
+        log_file.write(f"\n{'*'*len(str_temp)}\n")
+        log_file.write(str_temp)
+        log_file.write(f"\n{'*'*len(str_temp)}\n")
         log_file.write("Epoch, lr, Train_Loss, Val_Loss, Class_Accuracy, Class_F1_Macro, Class_Precision_Macro, Class_Recall_Macro, Category_Accuracy, Category_F1_Macro, Category_Precision_Macro, Category_Recall_Macro\n")
+        log_file.flush()  # Assicurati che i dati vengano scritti immediatamente sul disco
         
         for epoch in range(start_epoch, num_epochs):
             APP_LOGGER.info(f"Epoca {epoch+1}/{num_epochs}")
@@ -554,6 +560,7 @@ def training_classification(
                         normalized=True,
                         filename_prefix=f"epoch_{epoch+1}_class_confusion_matrix"
                     )
+                    
                 if training_mode == TRAINING_MODE.CATEGORIES:
                     plot_confusion_matrix(
                         cm_category,
@@ -565,22 +572,15 @@ def training_classification(
                     )
             APP_LOGGER.info('-'*100)
             
-
-            scheduler.step(avg_val_loss)
+            #CosineAnnealingLR
+            scheduler.step()
+            
+            #scheduler.step(avg_val_loss)
             #scheduler.step(epoch)
 
             # --- Gestione Checkpoint ---
             if avg_val_loss < best_val_loss:
                 best_val_loss = avg_val_loss
-                # checkpoint_path = os.path.join(checkpoint_dir, f"Epoch[{epoch+1}]_Loss[{avg_val_loss:.4f}].pth")
-                # APP_LOGGER.info(f"Validation loss migliorata ({avg_val_loss:.4f}). Salvataggio modello in {checkpoint_path}")
-                # torch.save({
-                #     'epoch': epoch,
-                #     'model_state_dict': model.state_dict(),
-                #     'optimizer_state_dict': optimizer.state_dict(),
-                #     'scheduler_state_dict': scheduler.state_dict(), 
-                #     'loss': avg_val_loss,
-                # }, checkpoint_path)
                 APP_LOGGER.info(f"Validation loss migliorata ({avg_val_loss:.4f}). Salvataggio checkpoint...")
                 top_checkpoints = save_top_checkpoints(
                     avg_val_loss, epoch, model, optimizer, scheduler, checkpoint_dir, top_k=3
@@ -589,15 +589,11 @@ def training_classification(
     APP_LOGGER.info("Addestramento completato.")
     
     checkpoint_path = os.path.join(checkpoint_dir, f"Epoch[{epoch+1}]_Loss[{avg_val_loss:.4f}].pth")
-    torch.save({
-        'epoch': epoch,
-        'model_state_dict': model.state_dict(),
-        'optimizer_state_dict': optimizer.state_dict(),
-        'scheduler_state_dict': scheduler.state_dict(), 
-        'loss': avg_val_loss,
-    }, checkpoint_path)
+    top_checkpoints = save_top_checkpoints(
+        avg_val_loss, epoch, model, optimizer, scheduler, checkpoint_dir, top_k=3, force = True
+    )
 
-def save_top_checkpoints(avg_val_loss, epoch, model, optimizer, scheduler, checkpoint_dir, top_k=3):
+def save_top_checkpoints(avg_val_loss, epoch, model, optimizer, scheduler, checkpoint_dir, top_k=3, force: bool = False):
     global top_checkpoints  # Per mantenere stato tra epoche
 
     checkpoint_path = os.path.join(
@@ -613,17 +609,19 @@ def save_top_checkpoints(avg_val_loss, epoch, model, optimizer, scheduler, check
         'loss': avg_val_loss,
     }, checkpoint_path)
 
-    # Aggiungi il nuovo checkpoint alla lista
-    top_checkpoints.append((avg_val_loss, checkpoint_path))
+    if not force:
 
-    # Ordina la lista in base alla loss (minore è meglio)
-    top_checkpoints = sorted(top_checkpoints, key=lambda x: x[0])
+        # Aggiungi il nuovo checkpoint alla lista
+        top_checkpoints.append((avg_val_loss, checkpoint_path))
 
-    # Se abbiamo più di top_k checkpoint, rimuovi quelli peggiori
-    if len(top_checkpoints) > top_k:
-        worst_checkpoint = top_checkpoints.pop(-1)  # Peggiore (ultimo)
-        if os.path.exists(worst_checkpoint[1]):
-            os.remove(worst_checkpoint[1])  # Elimina file dal disco
+        # Ordina la lista in base alla loss (minore è meglio)
+        top_checkpoints = sorted(top_checkpoints, key=lambda x: x[0])
+
+        # Se abbiamo più di top_k checkpoint, rimuovi quelli peggiori
+        if len(top_checkpoints) > top_k:
+            worst_checkpoint = top_checkpoints.pop(-1)  # Peggiore (ultimo)
+            if os.path.exists(worst_checkpoint[1]):
+                os.remove(worst_checkpoint[1])  # Elimina file dal disco
 
     return top_checkpoints  # opzionale, per debug/logging
 

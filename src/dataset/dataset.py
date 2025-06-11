@@ -236,7 +236,7 @@ class MITBIHDataset(Dataset):
     _V5_COL: str = 'V5'
     
     # lista dei record da utilizzare
-    _ALL_RECORDS: Final[list] = _RECORDS_MLII_V1 + _RECORDS_MLII_V2 + _RECORDS_MLII_V4 + _RECORDS_MLII_V5 + _RECORDS_V5_V2
+    _ALL_RECORDS: Final[list] = _RECORDS_MLII_V1 #+ _RECORDS_MLII_V2 + _RECORDS_MLII_V4 + _RECORDS_MLII_V5# + _RECORDS_V5_V2
     
     _FILES_CHEKED: bool = False
     _DATASET_PATH: None | str = None
@@ -309,18 +309,18 @@ class MITBIHDataset(Dataset):
         # NORMALIZZAZIONE DEI DATI
         #========================================================================#
         APP_LOGGER.info("Normalizzazione dei dati")
-        min_list = []
-        max_list = []
+        # min_list = []
+        # max_list = []
         
-        #cerco i massimi e i minimi di ogni segnale
-        for record_name in cls._ALL_RECORDS:
-            signal = cls._ALL_SIGNALS_DICT[record_name]
-            max_list.append(torch.max(signal).item())
-            min_list.append(torch.min(signal).item())
+        # #cerco i massimi e i minimi di ogni segnale
+        # for record_name in cls._ALL_RECORDS:
+        #     signal = cls._ALL_SIGNALS_DICT[record_name]
+        #     max_list.append(torch.max(signal).item())
+        #     min_list.append(torch.min(signal).item())
  
-        #cerco il massimo e il minimo assoluto
-        cls._MAX_VALUE = max(max_list)
-        cls._MIN_VALUE = min(min_list)
+        # #cerco il massimo e il minimo assoluto
+        # cls._MAX_VALUE = max(max_list)
+        # cls._MIN_VALUE = min(min_list)
         
         
         #normalizzo tutti i segnali
@@ -328,6 +328,7 @@ class MITBIHDataset(Dataset):
             signal = cls._ALL_SIGNALS_DICT[record_name]
             signal = (signal - MITBIHDataset._MIN_VALUE) / (MITBIHDataset._MAX_VALUE - MITBIHDataset._MIN_VALUE) 
             cls._ALL_SIGNALS_DICT[record_name] = signal
+        
         APP_LOGGER.info("Completata")
         APP_LOGGER.info(f"Valore massimo trovato: {cls._MAX_VALUE}")
         APP_LOGGER.info(f"Valore minimo trovato: {cls._MIN_VALUE}")
@@ -359,6 +360,8 @@ class MITBIHDataset(Dataset):
                 #========================================================================#
                 # ESTRAGGO IL SEGNALE
                 #========================================================================#
+                signal_list = []
+                
                 # --- Leggi il segnale dal file CSV ---
                 df = pd.read_csv(csv_filepath)
                 
@@ -372,16 +375,10 @@ class MITBIHDataset(Dataset):
                         data = torch.zeros(MITBIHDataset._MAX_SAMPLE_NUM).unsqueeze(0)
                     else:
                         continue
-                    
-                    if signal is None:
-                        signal = data
-                    else:
-                        signal = torch.cat((signal, data), dim=0)
-                    
-                # # Normalizza il segnale
-                # signal = signal.float() 
-                # signal = (signal - MITBIHDataset._MIN_VALUE) / (MITBIHDataset._MAX_VALUE - MITBIHDataset._MIN_VALUE) 
-                
+    
+                    signal_list.append(data)
+
+                signal = torch.cat(signal_list, dim=0)
                 
                 # Salva il segnale per il record corrente
                 cls._ALL_SIGNALS_DICT[record_name] = signal.float() 
@@ -458,9 +455,10 @@ class MITBIHDataset(Dataset):
         self._record_windows: Dict[str, Dict[int, Dict[str, any]]] = {}
         self._BPM_toWindows: Dict[int, list] = {}
         
-        train_ratio = 0.8
-        val_ratio = 0.1
-        test_ratio = 0.1
+        train_ratio = 0.75
+        test_ratio = 0.25
+        # val_ratio = 0.1
+        # test_ratio = 0.1
         
         APP_LOGGER.info("-"*100)
         APP_LOGGER.info(f"Caricamento valori per {self._mode} in modalità {self._dataMode}")
@@ -473,21 +471,24 @@ class MITBIHDataset(Dataset):
                 total_beat_number = sum([len(MITBIHDataset._ALL_SIGNALS_BEAT_ANNOTATIONS_DICT[key]) for key in MITBIHDataset._ALL_SIGNALS_BEAT_ANNOTATIONS_DICT.keys()])
                 index_list = range(0, total_beat_number)
 
-                train_indices, temp_indices = train_test_split(index_list, test_size=(val_ratio + test_ratio), random_state=MITBIHDataset.__RANDOM_SEED)
-                val_indices, test_indices = train_test_split(temp_indices, test_size=(test_ratio / (val_ratio + test_ratio)), random_state=MITBIHDataset.__RANDOM_SEED)
+                #train_indices, temp_indices = train_test_split(index_list, test_size=(val_ratio + test_ratio), random_state=MITBIHDataset.__RANDOM_SEED)
+                #val_indices, test_indices = train_test_split(temp_indices, test_size=(test_ratio / (val_ratio + test_ratio)), random_state=MITBIHDataset.__RANDOM_SEED)
 
-                APP_LOGGER.info(f"train_indices: {len(train_indices)}")
-                APP_LOGGER.info(f"val_indices: {len(val_indices)}")
-                APP_LOGGER.info(f"test_indices: {len(test_indices)}")
+                train_indices, test_indices = train_test_split(index_list, test_size=test_ratio, random_state=MITBIHDataset.__RANDOM_SEED)
+                
+
+                # APP_LOGGER.info(f"train_indices: {len(train_indices)}")
+                # APP_LOGGER.info(f"val_indices: {len(val_indices)}")
+                # APP_LOGGER.info(f"test_indices: {len(test_indices)}")
 
                 match self._mode:
                     case DatasetMode.TRAINING:
                         self.__load_data_for_Beat_classification(train_indices)
             
-                    case DatasetMode.VALIDATION:
-                        self.__load_data_for_Beat_classification(val_indices)
-                    
-                    case DatasetMode.TEST:
+                    #case DatasetMode.VALIDATION:
+                        #self.__load_data_for_Beat_classification(val_indices)
+
+                    case DatasetMode.VALIDATION | DatasetMode.TEST:
                         self.__load_data_for_Beat_classification(test_indices)
             
                     case _ :
@@ -899,7 +900,7 @@ class MITBIHDataset(Dataset):
             y = np.array(y)  # shape: (n_samples,)            
                         
             sampling_strategy = {
-                k: v if (v > 10_000 or k == 0) else (v*10 if v < 500 else (v*6 if v < 1000 else v*3))
+                k: v if (v > 10_000 or k == 0) else (v*14 if v < 500 else (v*8 if v < 1000 else v*4))
                 for k, v in classNumber.items()
             }
             
