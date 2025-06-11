@@ -1,3 +1,4 @@
+from collections import Counter
 import random
 from sklearn.model_selection import train_test_split
 import torch
@@ -469,19 +470,105 @@ class MITBIHDataset(Dataset):
                 self._load_data_for_BPM_regression()
                 
             case DatasetDataMode.BEAT_CLASSIFICATION: 
-                total_beat_number = sum([len(MITBIHDataset._ALL_SIGNALS_BEAT_ANNOTATIONS_DICT[key]) for key in MITBIHDataset._ALL_SIGNALS_BEAT_ANNOTATIONS_DICT.keys()])
-                index_list = range(0, total_beat_number)
-
-                #train_indices, temp_indices = train_test_split(index_list, test_size=(val_ratio + test_ratio), random_state=MITBIHDataset.__RANDOM_SEED)
-                #val_indices, test_indices = train_test_split(temp_indices, test_size=(test_ratio / (val_ratio + test_ratio)), random_state=MITBIHDataset.__RANDOM_SEED)
-
-                train_indices, test_indices = train_test_split(index_list, test_size=test_ratio, random_state=MITBIHDataset.__RANDOM_SEED)
                 
+                total_beat_number: int = 0
+                y: List[int] = []
+                
+                # for record_key in MITBIHDataset._ALL_SIGNALS_BEAT_ANNOTATIONS_DICT.keys():
+                #     for beat in MITBIHDataset._ALL_SIGNALS_BEAT_ANNOTATIONS_DICT[record_key]:
+                #         y.append(BeatType.getBeatClass(beat["annotation"]))
+                    
+                #     total_beat_number += len(MITBIHDataset._ALL_SIGNALS_BEAT_ANNOTATIONS_DICT[record_key])
+                
+                # x = range(0, total_beat_number)
+                
+                # #train_indices, temp_indices = train_test_split(index_list, test_size=(val_ratio + test_ratio), random_state=MITBIHDataset.__RANDOM_SEED)
+                # #val_indices, test_indices = train_test_split(temp_indices, test_size=(test_ratio / (val_ratio + test_ratio)), random_state=MITBIHDataset.__RANDOM_SEED)
 
-                # APP_LOGGER.info(f"train_indices: {len(train_indices)}")
-                # APP_LOGGER.info(f"val_indices: {len(val_indices)}")
-                # APP_LOGGER.info(f"test_indices: {len(test_indices)}")
+                # #mi interessano solo gli indici
+                # train_indices, test_indices, _, _ = train_test_split(
+                #     x,y,
+                #     stratify=y,
+                #     test_size=test_ratio, 
+                #     random_state=MITBIHDataset.__RANDOM_SEED
+                # )
+                
+                # Costruzione della lista target y
+                for record_key in MITBIHDataset._ALL_SIGNALS_BEAT_ANNOTATIONS_DICT.keys():
+                    for beat in MITBIHDataset._ALL_SIGNALS_BEAT_ANNOTATIONS_DICT[record_key]:
+                        y.append(BeatType.getBeatClass(beat["annotation"]))
+                    total_beat_number += len(MITBIHDataset._ALL_SIGNALS_BEAT_ANNOTATIONS_DICT[record_key])
 
+                x = np.arange(total_beat_number)
+                y = np.array(y)
+
+                # Conta le occorrenze di ogni classe
+                class_counts = Counter(y)
+                rare_classes = [cls for cls, count in class_counts.items() if count < 8]
+
+                print(f"Classi rare trovate: {rare_classes}")
+
+                train_indices = []
+                val_indices = []
+
+                for rare_class in rare_classes:
+                    indices = np.where(y == rare_class)[0]
+                    if len(indices) == 1:
+                        # La classe ha un solo elemento: va nel train
+                        train_indices.append(indices[0])
+                    else:
+                        # Metti uno nel train e uno nel test
+                        train_indices.append(indices[0])
+                        val_indices.append(indices[1])
+
+                # Questi sono gli indici rari già assegnati
+                rare_assigned = np.array(train_indices + val_indices)
+                remaining_indices = np.setdiff1d(x, rare_assigned)
+
+                # Ora split dei rimanenti dati (stratificato)
+                remaining_y = y[remaining_indices]
+
+                # Controlla se ci sono ancora problemi di classi con un solo elemento
+                remaining_counts = Counter(remaining_y)
+                problematic_classes = [cls for cls, count in remaining_counts.items() if count < 2]
+
+                if problematic_classes:
+                    print(f"Attenzione: ancora classi troppo piccole per stratify: {problematic_classes}")
+                    # Sposta queste classi tutte nel test
+                    for cls in problematic_classes:
+                        cls_indices = remaining_indices[np.where(remaining_y == cls)[0]]
+                        val_indices.extend(cls_indices.tolist())
+                    # Aggiorna remaining
+                    rare_assigned = np.array(train_indices + val_indices)
+                    remaining_indices = np.setdiff1d(x, rare_assigned)
+                    remaining_y = y[remaining_indices]
+
+                # Se ci sono dati sufficienti, fai stratify
+                if len(np.unique(remaining_y)) > 1:
+                    tmp_train_indices, tmp_val_indices = train_test_split(
+                        remaining_indices,
+                        stratify=remaining_y,
+                        test_size=test_ratio,
+                        random_state=MITBIHDataset.__RANDOM_SEED
+                    )
+                else:
+                    # Non possibile stratify se rimane solo una classe
+                    tmp_train_indices, tmp_val_indices = train_test_split(
+                        remaining_indices,
+                        test_size=test_ratio,
+                        random_state=MITBIHDataset.__RANDOM_SEED
+                    )
+
+                # Aggiungi ai train/test finali
+                train_indices = np.concatenate([train_indices, tmp_train_indices])
+                test_indices = np.concatenate([val_indices, tmp_val_indices])
+                
+                # Controllo finale
+                print(f"Train size: {len(train_indices)}, Test size: {len(test_indices)}")
+                print(f"Classi nel train: {np.unique(y[train_indices])}")
+                print(f"Classi nel test: {np.unique(y[test_indices])}")
+
+               
                 match self._mode:
                     case DatasetMode.TRAINING:
                         self.__load_data_for_Beat_classification(train_indices)
@@ -903,14 +990,14 @@ class MITBIHDataset(Dataset):
             y = np.array(y)  # shape: (n_samples,)            
                         
             sampling_strategy = {
-                k: v if (v > 10_000 or k == 0) else (v*14 if v < 500 else (v*8 if v < 1000 else v*4))
+                k: v if (v > 15_000 or k == 0) else (v*200 if v <= 100 else (v*14 if v < 500 else (v*8 if v < 1000 else v*4)))
                 for k, v in classNumber.items()
             }
             
             APP_LOGGER.info('-'*100)
             APP_LOGGER.info("Esecuzione della SMOTE...")
             APP_LOGGER.info(sampling_strategy)
-            smote = SMOTE(sampling_strategy=sampling_strategy, random_state=MITBIHDataset.__RANDOM_SEED)    
+            smote = SMOTE(sampling_strategy=sampling_strategy, random_state=MITBIHDataset.__RANDOM_SEED, k_neighbors=1)    
             X_res, y_res = smote.fit_resample(X, y)
             APP_LOGGER.info('-'*100)
             

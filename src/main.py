@@ -354,7 +354,7 @@ def training_classification(
     category_loss_function = nn.CrossEntropyLoss(weight=category_weights, ignore_index=category_to_ignore)
     
     optimizer = optim.Adam(model.parameters(), lr=start_lr, weight_decay=1e-3)
-    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=num_epochs, eta_min=1e-6)
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=num_epochs, eta_min=0.5e-6)
     
     # scheduler = lr_scheduler.ReduceLROnPlateau(
     #     optimizer,
@@ -411,7 +411,7 @@ def training_classification(
             val_category_preds = []
             val_category_targets = []
 
-            APP_LOGGER.info("Training in modalità Categorie")
+            #APP_LOGGER.info("Training in modalità Categorie")
             model.train()
             train_loop = tqdm(train_dataloader, leave=False, desc=f"Training Epoca {epoch+1}")
             
@@ -852,33 +852,33 @@ def main():
     models: List[Tuple[nn.Module, TRAINING_MODE]] = [
     
         # (
+        #     ResNet1D_18_Classes(
+        #         in_channels_signal=channels_enum.value,
+        #         classes_output_dim=BeatType.num_classes()
+        #     ),
+        #     TRAINING_MODE.CLASSES  
+        # ),
+        # (
         #     ResNet1D_18_Categories(
         #         in_channels_signal=channels_enum.value,
         #         categories_output_dim=BeatType.num_of_category()
         #     ),
         #     TRAINING_MODE.CATEGORIES
         # ),
-        (
-            ResNet1D_18_Classes(
-                in_channels_signal=channels_enum.value,
-                classes_output_dim=BeatType.num_classes()
-            ),
-            TRAINING_MODE.CLASSES  
-        ),
-        (
-            ResNet1D_34_Categories(
-                in_channels_signal=channels_enum.value,
-                categories_output_dim=BeatType.num_of_category()
-            ),
-            TRAINING_MODE.CATEGORIES
-        ),
-        (
-            ResNet1D_34_Classes(
-                in_channels_signal=channels_enum.value,
-                classes_output_dim=BeatType.num_classes()
-            ),
-            TRAINING_MODE.CLASSES  
-        ),
+        # (
+        #     ResNet1D_34_Categories(
+        #         in_channels_signal=channels_enum.value,
+        #         categories_output_dim=BeatType.num_of_category()
+        #     ),
+        #     TRAINING_MODE.CATEGORIES
+        # ),
+        # (
+        #     ResNet1D_34_Classes(
+        #         in_channels_signal=channels_enum.value,
+        #         classes_output_dim=BeatType.num_classes()
+        #     ),
+        #     TRAINING_MODE.CLASSES  
+        # ),
         (
             ResNet1D_50_Categories(
                 in_channels_signal=channels_enum.value,
