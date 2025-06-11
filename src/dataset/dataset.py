@@ -246,13 +246,15 @@ class MITBIHDataset(Dataset):
     _MAX_SAMPLE_NUM: int = 650000
     _MAX_BPM=260
     _MIN_BPM=0
+    __SMAMPLE_PER_WINDOW: int = 280 # Numero di campioni per finestra
     
     __SAMPLE_RATE: int | None = None
     __RANDOM_SEED: int | None = None
     __USE_SMOTE: bool = True
     # Dizionario per memorizzare il segnale di ogni record
     _ALL_SIGNALS_DICT: Dict[str, torch.Tensor] = {}
-    _WINDOWS: Dict[int, Dict[str, Any]] = {}
+    _WINDOWS: List[Dict[str, Any]] = []
+    __CHANNELS: DatasetChannels = DatasetChannels.TWO
     
     # Dizionario per memorizzare le annotazioni di ogni segnale
     _ALL_SIGNALS_BEAT_ANNOTATIONS_DICT: Dict[str, List[Dict[str, Any]]] = {}
@@ -263,12 +265,15 @@ class MITBIHDataset(Dataset):
     def resetDataset(cls) -> None:
         cls._DATASET_PATH = None
         cls._FILES_CHEKED = False
+        cls.__SMAMPLE_PER_WINDOW = 280
+        cls.__CHANNELS = DatasetChannels.TWO
+        cls._WINDOWS.clear()
         cls._ALL_SIGNALS_DICT.clear()
         cls._ALL_SIGNALS_BEAT_ANNOTATIONS_DICT.clear()
         cls._ALL_SIGNALS_TAG_ANNOTATIONS_DICT.clear()
 
     @classmethod
-    def initDataset(cls, path: str, sample_rate: int = 360, *, fill_and_concat_missing_channels: bool = False, random_seed: int = 42):
+    def initDataset(cls, path: str, sample_rate: int = 360, samples_per_window: int = 280, channels: DatasetChannels = DatasetChannels.TWO,*, fill_and_concat_missing_channels: bool = False, random_seed: int = 42):
         """
         Imposta il percorso del dataset e carica staticamente tutti i dati.
         Questo metodo dovrebbe essere chiamato una volta all'inizio del programma.
@@ -279,7 +284,9 @@ class MITBIHDataset(Dataset):
         
         cls.__SAMPLE_RATE = sample_rate
         cls.__RANDOM_SEED = random_seed
+        cls.__SMAMPLE_PER_WINDOW = samples_per_window
         cls._DATASET_PATH = path
+        cls.__CHANNELS = channels
         
         #========================================================================#
         # VERIFICO I FILES
@@ -423,6 +430,148 @@ class MITBIHDataset(Dataset):
                 progress_bar.update(1)
         finally:
             progress_bar.close()
+        
+        
+        dataDict: Dict[BeatType, List[torch.Tensor]] = {}
+        cls._WINDOWS.clear()
+        
+        progress_bar = tqdm(total=len(cls._ALL_RECORDS), desc="generazione delel finestre")
+        for record_name in MITBIHDataset._ALL_RECORDS:
+            progress_bar.set_description(f"record {record_name}")
+
+            annotations = MITBIHDataset._ALL_SIGNALS_BEAT_ANNOTATIONS_DICT[record_name]
+            signal = MITBIHDataset._ALL_SIGNALS_DICT[record_name]
+
+            for annotation in annotations:
+                beat_type = annotation["annotation"]
+                sample_pos = annotation["sample_pos"]   
+                  
+                if not BeatType.isBeat(beat_type):
+                    continue
+                
+                start = sample_pos - int(cls.__SMAMPLE_PER_WINDOW / 2)
+                end = sample_pos + int(cls.__SMAMPLE_PER_WINDOW / 2)
+                  
+                if start < 0:
+                    offset = abs(start)
+                    start = 0
+                    end = end + offset
+                
+                if end > MITBIHDataset._MAX_SAMPLE_NUM - 1:
+                    offset = end - (MITBIHDataset._MAX_SAMPLE_NUM -1)
+                    end = MITBIHDataset._MAX_SAMPLE_NUM -1
+                    start = start - offset
+                    
+                # # Extract and pad signal fragment
+                signal_fragment = signal[:, start:end]
+                if dataDict.get(beat_type) is None:
+                    dataDict[beat_type] = [signal_fragment]
+                else:
+                    dataDict[beat_type].append(signal_fragment)
+                    
+                  
+            progress_bar.update(1)
+        progress_bar.close()
+        
+        APP_LOGGER.info("Numero di valori per ogni classe:")
+        for beat_type, signals in dataDict.items():
+            APP_LOGGER.info(f"{beat_type.value[0]}: {len(signals)} segnali")
+                
+        if MITBIHDataset.__USE_SMOTE:
+            APP_LOGGER.info('-'*100)
+            APP_LOGGER.info(f"Applicazione della SMOTE")   
+            
+            X = []
+            y = []
+            
+            threshold = 2
+            ignored_x = []
+            ignored_y = []
+            classNumber:dict = {k: 0 for k in range(0, BeatType.num_classes())}   
+            
+            for beat_type, signals in dataDict.items():
+                
+                if len(signals) < threshold:
+                    APP_LOGGER.warning(f"Tipo di battito {beat_type.value[0]} ha meno di {threshold} segnali, ignorato per la SMOTE")
+                    for signal in signals:
+                        ignored_x.append(signal)
+                        ignored_y.append(beat_type)  # Usa il valore numerico del BeatType
+                else:
+                    classNumber[beat_type.value[1]] += len(signals)
+                    for signal in signals:
+                        X.append(signal.reshape(-1).numpy())  
+                        y.append(beat_type.value[1])          
+                  
+            X = np.stack(X)  # shape: (n_samples, 560)
+            y = np.array(y)  # shape: (n_samples,)            
+                        
+            sampling_strategy = {
+                k: v if (v > 15_000 or k == 0) else (v*200 if v <= 100 else (v*14 if v < 500 else (v*8 if v < 1000 else v*4)))
+                for k, v in classNumber.items()
+            }
+            
+            
+            APP_LOGGER.info(f'Sampling strategy: {sampling_strategy}')
+            APP_LOGGER.info("Esecuzione della SMOTE...")
+            
+            smote = SMOTE(sampling_strategy=sampling_strategy, random_state=MITBIHDataset.__RANDOM_SEED, k_neighbors=1)    
+            X_res, y_res = smote.fit_resample(X, y)
+            
+            APP_LOGGER.info("Dati dopo la SMOTE:")
+            for beat_type in BeatType:
+                if BeatType.isBeat(beat_type):
+                    count = np.sum(y_res == beat_type.value[1])
+                    APP_LOGGER.info(f"{beat_type.value[0]}: {count} segnali")
+            
+            X_res = X_res.reshape(-1, 2, cls.__SMAMPLE_PER_WINDOW)  # ripristino della forma originale
+                          
+                    
+            for xi, yi in zip(X_res, y_res):
+                beat_type = BeatType.tokenize(int(yi))
+                tensor_signal = torch.tensor(xi).view(cls.__CHANNELS.value, cls.__SMAMPLE_PER_WINDOW)
+               
+                if len(tensor_signal.shape) == 1:
+                    tensor_signal = tensor_signal.unsqueeze(dim=0)
+               
+                cls._WINDOWS.append({
+                    'signal_fragment' : tensor_signal,
+                    'beatType': beat_type,
+                    'class' : torch.tensor([yi], dtype=torch.long),
+                    'category': torch.tensor([BeatType.getBeatCategory(beat_type)], dtype=torch.long),
+                    #'record_name': record_name,
+                })
+
+                
+            for tensor_signal, beat_type in zip(ignored_x, ignored_y):
+                cls._WINDOWS.append({
+                    'signal_fragment' : tensor_signal,
+                    'beatType': beat_type,
+                    'class' : torch.tensor([BeatType.getBeatClass(beat_type)], dtype=torch.long),
+                    'category': torch.tensor([BeatType.getBeatCategory(beat_type)], dtype=torch.long),
+                    #'record_name': record_name,
+                })
+        else:       
+            temp_list = []
+            for beat_type, signals in dataDict.items():
+                for signal in signals:
+                    temp_list.append({
+                        'signal_fragment': signal,
+                        'beatType': beat_type,
+                        'class': torch.tensor([BeatType.getBeatClass(beat_type)], dtype=torch.long),
+                        'category': torch.tensor([BeatType.getBeatCategory(beat_type)], dtype=torch.long),
+                        # 'record_name': record_name,
+                    })
+
+            # Shuffle dell'intera lista
+            random.shuffle(temp_list)
+            
+            # Ricopia nella struttura self._windows con nuovo ordine casuale
+            for item in temp_list:
+                cls._WINDOWS.append(item)
+        
+        APP_LOGGER.info('-'*100)
+        APP_LOGGER.info(f"Finestre create: {len(cls._WINDOWS)}")       
+        APP_LOGGER.info('-'*100)
 
     def __new__(cls, *args, **kwargs):
         return super(MITBIHDataset, cls).__new__(cls)  
@@ -431,11 +580,9 @@ class MITBIHDataset(Dataset):
     def __init__(
             self, 
             *,
-            sample_per_window: int | None = None, 
-            sample_per_stride: int | None = None, 
             mode: DatasetMode | None = None, 
-            dataMode: DatasetDataMode | None = None, 
-            channels: DatasetChannels = DatasetChannels.TWO
+            dataMode: DatasetDataMode | None = None,
+            **kwargs 
         ):
         assert MITBIHDataset._DATASET_PATH, "Il percorso del dataset non è stato impostato. Usa 'setDatasetPath' per impostarlo."
         assert MITBIHDataset._FILES_CHEKED, "files del dataset non verificati"
@@ -443,10 +590,7 @@ class MITBIHDataset(Dataset):
    
         self._mode: DatasetMode = mode
         self._dataMode: DatasetDataMode = dataMode
-        self._channels: DatasetChannels = channels
         
-        self._samples_per_window: int = sample_per_window
-        self._samples_per_side:int = sample_per_stride
         
   
         #dizionario delle finestre di dati     
@@ -469,8 +613,10 @@ class MITBIHDataset(Dataset):
                 self._load_data_for_BPM_regression()
                 
             case DatasetDataMode.BEAT_CLASSIFICATION: 
-                total_beat_number = sum([len(MITBIHDataset._ALL_SIGNALS_BEAT_ANNOTATIONS_DICT[key]) for key in MITBIHDataset._ALL_SIGNALS_BEAT_ANNOTATIONS_DICT.keys()])
-                index_list = range(0, total_beat_number)
+                # total_beat_number = sum([len(MITBIHDataset._ALL_SIGNALS_BEAT_ANNOTATIONS_DICT[key]) for key in MITBIHDataset._ALL_SIGNALS_BEAT_ANNOTATIONS_DICT.keys()])
+                # index_list = range(0, total_beat_number)
+
+                index_list = range(0, len(MITBIHDataset._WINDOWS))
 
                 #train_indices, temp_indices = train_test_split(index_list, test_size=(val_ratio + test_ratio), random_state=MITBIHDataset.__RANDOM_SEED)
                 #val_indices, test_indices = train_test_split(temp_indices, test_size=(test_ratio / (val_ratio + test_ratio)), random_state=MITBIHDataset.__RANDOM_SEED)
@@ -793,195 +939,11 @@ class MITBIHDataset(Dataset):
     def __load_data_for_Beat_classification(self, indices: List[int]):
         indices = sorted(indices)
         
-        idx: int = 0
-        counter: int = 0
-        window_counter: int = 0
-        done: bool = False
-        
-        progress_bar = tqdm(total=len(indices))
-        
-        dataDict: Dict[BeatType, List[torch.Tensor]] = {}
-        
-        try:
-            for record_name in MITBIHDataset._ALL_RECORDS:
-                progress_bar.set_description(f"record {record_name}")
-                
-                if done:  break
-                
-                annotations = MITBIHDataset._ALL_SIGNALS_BEAT_ANNOTATIONS_DICT[record_name]
-                signal = MITBIHDataset._ALL_SIGNALS_DICT[record_name]
-                
-                
-                for annotation in annotations:
-                    
-                    #se ho preso tutti gli elementi
-                    if idx >= len(indices):
-                        done=True
-                        break
-                    
-                    #se non ho ancora raggiugnto l'indice dell'elemento da utilizzare
-                    elif indices[idx] > counter:
-                        counter += 1
-                        continue
-                    
-                    #se h oraggiugnto l'indice dell'elemeneto da utilizzare
-                    elif indices[idx] == counter:
-                        progress_bar.update(1)
-                        counter += 1
-                        idx+=1
-                        
-                    
-                    
-                    beat_type = annotation["annotation"]
-                    sample_pos = annotation["sample_pos"]
-                    #time = annotation["time"]
-                    
-                    #Verifico il tipo di annotazione
-                    if not BeatType.isBeat(beat_type):
-                        continue
-                    
-                    start = sample_pos - int(self._samples_per_window / 2)
-                    end = sample_pos + int(self._samples_per_window / 2)
-
-
-                    #ignoro il campione se non ci sta nella finestra
-                    # if start < 0 or end >= MITBIHDataset._MAX_SAMPLE_NUM:
-                    #     continue
-                    
-                    if start < 0:
-                        offset = abs(start)
-                        start = 0
-                        end = end + offset
-                    
-                    if end > MITBIHDataset._MAX_SAMPLE_NUM - 1:
-                        offset = end - (MITBIHDataset._MAX_SAMPLE_NUM -1)
-                        end = MITBIHDataset._MAX_SAMPLE_NUM -1
-                        start = start - offset
-                      
-                    # # Extract and pad signal fragment
-                    signal_fragment = signal[:, start:end]
-                    
-                    if dataDict.get(beat_type) is None:
-                        dataDict[beat_type] = [signal_fragment]
-                    else:
-                        dataDict[beat_type].append(signal_fragment)
-                    
-        finally:
-            progress_bar.close()  
-            
-        APP_LOGGER.info("Valori di ogni classe:")
-        for beat_type, signals in dataDict.items():
-            APP_LOGGER.info(f"{beat_type.value[0]}: {len(signals)} segnali")
-        
-        if self._mode == DatasetMode.TRAINING and MITBIHDataset.__USE_SMOTE:
-            APP_LOGGER.info(f"Applicazione della SMOTE")   
-            
-            
-            X = []
-            y = []
-            
-            threshold = 2
-            ignored_x = []
-            ignored_y = []
-            classNumber:dict = {}
-            
-
-            for beat_type, signals in dataDict.items():
-                
-                if len(signals) < threshold:
-                    APP_LOGGER.warning(f"Tipo di battito {beat_type.value[0]} ha meno di {threshold} segnali, ignorato per la SMOTE")
-                    for signal in signals:
-                        ignored_x.append(signal)
-                        ignored_y.append(beat_type)  # Usa il valore numerico del BeatType
-                else:
-                    classNumber[beat_type.value[1]] = len(signals)
-                    for signal in signals:
-                        X.append(signal.reshape(-1).numpy())  
-                        y.append(beat_type.value[1])          
-                  
-            X = np.stack(X)  # shape: (n_samples, 560)
-            y = np.array(y)  # shape: (n_samples,)            
-                        
-            sampling_strategy = {
-                k: v if (v > 10_000 or k == 0) else (v*14 if v < 500 else (v*8 if v < 1000 else v*4))
-                for k, v in classNumber.items()
-            }
-            
-            APP_LOGGER.info('-'*100)
-            APP_LOGGER.info("Esecuzione della SMOTE...")
-            APP_LOGGER.info(sampling_strategy)
-            smote = SMOTE(sampling_strategy=sampling_strategy, random_state=MITBIHDataset.__RANDOM_SEED)    
-            X_res, y_res = smote.fit_resample(X, y)
-            APP_LOGGER.info('-'*100)
-            
-            APP_LOGGER.info("Dati dopo la SMOTE:")
-            for beat_type in BeatType:
-                if BeatType.isBeat(beat_type):
-                    count = np.sum(y_res == beat_type.value[1])
-                    APP_LOGGER.info(f"{beat_type.value[0]}: {count} segnali")
-            
-            X_res = X_res.reshape(-1, 2, 280)  # ripristino della forma originale
-            
-            
-            for xi, yi in zip(X_res, y_res):
-                beat_type = BeatType.tokenize(int(yi))
-                tensor_signal = torch.tensor(xi).view(self._channels.value, 280)
-               
-                if len(tensor_signal.shape) == 1:
-                    tensor_signal = tensor_signal.unsqueeze(dim=0)
-               
-                self._windows[window_counter] = {
-                    'signal_fragment' : tensor_signal,
-                    'beatType': beat_type,
-                    'class' : torch.tensor([yi], dtype=torch.long),
-                    'category': torch.tensor([BeatType.getBeatCategory(beat_type)], dtype=torch.long),
-                    #'record_name': record_name,
-                }
-                window_counter += 1
-                
-            for tensor_signal, beat_type in zip(ignored_x, ignored_y):
-                
-                self._windows[window_counter] = {
-                    'signal_fragment' : tensor_signal,
-                    'beatType': beat_type,
-                    'class' : torch.tensor([BeatType.getBeatClass(beat_type)], dtype=torch.long),
-                    'category': torch.tensor([BeatType.getBeatCategory(beat_type)], dtype=torch.long),
-                    #'record_name': record_name,
-                }
-                
-                window_counter += 1
-        else:
-            # for beat_type, signals in dataDict.items():
-            #     for signal in signals:
-            #         self._windows[window_counter] = {
-            #             'signal_fragment' : signal,
-            #             'beatType': beat_type,
-            #             'class' : torch.tensor([BeatType.getBeatClass(beat_type)], dtype=torch.long),
-            #             'category': torch.tensor([BeatType.getBeatCategory(beat_type)], dtype=torch.long),
-            #             #'record_name': record_name,
-            #         }
-            #         window_counter += 1
-            temp_list = []
-            for beat_type, signals in dataDict.items():
-                for signal in signals:
-                    temp_list.append({
-                        'signal_fragment': signal,
-                        'beatType': beat_type,
-                        'class': torch.tensor([BeatType.getBeatClass(beat_type)], dtype=torch.long),
-                        'category': torch.tensor([BeatType.getBeatCategory(beat_type)], dtype=torch.long),
-                        # 'record_name': record_name,
-                    })
-
-            # Shuffle dell'intera lista
-            random.shuffle(temp_list)
-            
-            # Ricopia nella struttura self._windows con nuovo ordine casuale
-            for window_counter, item in enumerate(temp_list):
-                self._windows[window_counter] = item
-      
-        #APP_LOGGER.info(f"Finestre create: {len(self._windows.keys())}")
-        APP_LOGGER.info(f"Finestre create: {window_counter}")
-            
+        for i, j in enumerate(indices):
+            self._windows[i] = MITBIHDataset._WINDOWS[j]
+         
+         
+        APP_LOGGER.info(f"Numero di finestre caricate: {len(self._windows.keys())}")
           
         # Calcolo dei pesi delle classi
         if self._mode == DatasetMode.TRAINING:
@@ -1022,16 +984,17 @@ class MITBIHDataset(Dataset):
             
             unique_caregories = np.unique(all_categories)
             
-            
-            
+
             class_weights = compute_class_weight(class_weight='balanced', classes=unique_caregories, y=all_categories)
             self._category_weights = torch.tensor(class_weights, dtype=torch.float32)
             
+            APP_LOGGER.info("-"*100)
             APP_LOGGER.info(f"Classi trovate: {unique_classes}")
             APP_LOGGER.info(f"Catregorie trovate: {unique_caregories}")
-            APP_LOGGER.info(f"Pesi delle classi calcolati:\n{self._class_weights}")
+            APP_LOGGER.info("")
+            APP_LOGGER.info(f"Pesi delle classi calcolati:\n{self._class_weights}\n")
             APP_LOGGER.info(f"Pesi delle categorie calcolati:\n{self._category_weights}")
-    
+            APP_LOGGER.info("-"*100)
     
     @classmethod    
     def _formatTime(cls, time: str) -> float:        
