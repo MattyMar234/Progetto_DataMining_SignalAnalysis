@@ -7,69 +7,43 @@ import math
 class CNNFeatureExtractor(nn.Module):
     def __init__(self, input_length=280, num_channels=2):
         super(CNNFeatureExtractor, self).__init__()
+        assert input_length % 10 == 0, "Input length must be divisible by 10"
+        
         self.input_length = input_length
         self.num_channels = num_channels
+        self.patchSize = 10
 
-        # Le dimensioni per il reshape da 280 punti, come da Figura 2 del paper originale.
-        # Questo assume che i 280 punti di un canale possano essere interpretati come 10 "sottocanali"
-        # ciascuno lungo 28 punti per la Conv1D.
-        self.input_reshape_channels_per_channel = 10
-        self.input_reshape_length_per_channel = 28
-        self.feature_output_length = 3 # Per allinearsi alla "3x1" del paper
+        self.input_reshape_channels = int(self.input_length/self.patchSize) * self.num_channels
 
-        # Livelli CNN per un singolo canale
-        self.conv1_c = nn.Conv1d(in_channels=self.input_reshape_channels_per_channel, out_channels=32, kernel_size=2, stride=1)
-        self.relu1_c = nn.ReLU()
-        self.maxpool1_c = nn.MaxPool1d(kernel_size=2, stride=1)
-
-        self.conv2_c = nn.Conv1d(in_channels=32, out_channels=64, kernel_size=2, stride=1)
-        self.relu2_c = nn.ReLU()
-        self.maxpool2_c = nn.MaxPool1d(kernel_size=2, stride=1)
-
-        self.conv3_c = nn.Conv1d(in_channels=64, out_channels=128, kernel_size=2, stride=1)
-        self.relu3_c = nn.ReLU()
-
-        self.adaptive_pool = nn.AdaptiveAvgPool1d(self.feature_output_length)
-
-        # Calcola la dimensione delle feature estratte per un singolo canale
-        self.features_per_channel = 128 * self.feature_output_length
-        # Calcola la dimensione totale delle feature per un singolo battito (combinando tutti i canali)
-        self.output_features_per_beat = self.features_per_channel * self.num_channels
-
-    def _process_single_channel(self, x_single_channel):
-        # x_single_channel: (batch_size, original_beat_length)
-        # Reshape per l'elaborazione CNN (divide la sequenza lunga in "sottocanali" e "sottosequenze")
-        x_reshaped = x_single_channel.view(-1, self.input_reshape_channels_per_channel, self.input_reshape_length_per_channel)
-
-        x = self.relu1_c(self.conv1_c(x_reshaped))
-        x = self.maxpool1_c(x)
-        x = self.relu2_c(self.conv2_c(x))
-        x = self.maxpool2_c(x)
-        x = self.relu3_c(self.conv3_c(x))
-
-        x = self.adaptive_pool(x)
-        c = x.view(x.size(0), -1) # Appiattisce l'output in un vettore di feature per canale
-        return c
+        self.convLayes = nn.Sequential(
+            [
+                nn.Conv1d(in_channels= self.input_reshape_channels, out_channels=32, kernel_size=2, stride=1, padding=1),
+                 nn.BatchNorm1d(32),
+                nn.ReLU(),
+                nn.MaxPool1d(kernel_size=2, stride=2),
+                
+                nn.Conv1d(in_channels=32, out_channels=64, kernel_size=2, stride=1, padding=1),
+                nn.BatchNorm1d(64),
+                nn.ReLU(),
+                nn.MaxPool1d(kernel_size=3, stride=1),
+                
+                nn.Conv1d(in_channels=64, out_channels=128, kernel_size=2, stride=1, padding=1),
+                nn.BatchNorm1d(128),
+                nn.ReLU(),  
+            ]
+        )
 
     def forward(self, x):
-        # x: (batch_size, num_channels, original_beat_length)
-        # Questa funzione ora processa un singolo battito (con i suoi canali) per ogni elemento del batch.
-        batch_size, num_channels, original_beat_length = x.shape # Unpacking corretto
+        
+        batch_size, _, _ = x.shape
+        
+        # Reshape to (batch_size, 10*num_channels, 28)
+        x = x.view(batch_size, self.input_reshape_channels, self.patchSize)
+        return self.convLayers(x)
 
-        # Processa ogni canale separatamente
-        channel_features = []
-        for i in range(num_channels):
-            features = self._process_single_channel(x[:, i, :]) # Seleziona il canale i-esimo
-            channel_features.append(features)
 
-        # Concatena le feature da tutti i canali
-        combined_features = torch.cat(channel_features, dim=1) # (batch_size, self.output_features_per_beat)
 
-        # Aggiungi una dimensione di lunghezza 1 per la "sequenza" per renderlo compatibile con ViT
-        # che si aspetta (batch_size, sequence_length, features)
-        combined_features = combined_features.unsqueeze(1) # (batch_size, 1, output_features_per_beat)
 
-        return combined_features
 
 
 class TransformerEncoderBlock(nn.Module):

@@ -1,192 +1,74 @@
-from typing import Tuple
 import torch
 import torch.nn as nn
 import math
 
-class PositionalEncoding(nn.Module):
-    """
-    Implementa il Positional Encoding standard basato su seno e coseno.
-    Aggiunge informazioni sulla posizione del token agli embedding.
-    """
-    def __init__(self, d_model: int, dropout: float = 0.1, max_len: int = 5000):
-        super().__init__()
-        self.dropout = nn.Dropout(p=dropout)
 
-        # Crea la matrice di encoding posizionale
-        # Shape: (max_len, d_model)
-        position = torch.arange(max_len).unsqueeze(1)
-        div_term = torch.exp(torch.arange(0, d_model, 2) * (-math.log(10000.0) / d_model))
-        pe = torch.zeros(max_len, 1, d_model)
-        pe[:, 0, 0::2] = torch.sin(position * div_term)
-        pe[:, 0, 1::2] = torch.cos(position * div_term)
-
-        # Registra la matrice come buffer (non sarà addestrata)
-        self.register_buffer('pe', pe)
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """
-        Args:
-            x: Tensor input con shape (sequence_length, batch_size, d_model)
-               o (batch_size, sequence_length, d_model) - dipendente dall'input del TransformerEncoder
-               PyTorch standard usa (sequence_length, batch_size, feature_dim) per PE.
-               Useremo (batch_size, sequence_length, feature_dim) e trasporremo se necessario.
-        Returns:
-            Tensor con shape uguale a x, con l'aggiunta del positional encoding.
-        """
-        # Assumiamo input shape (batch_size, sequence_length, d_model)
-        batch_size, seq_len, d_model = x.shape
-
-        x = x.permute(1, 0, 2) # -> (sequence_length, batch_size, d_model)
-        x = x + self.pe[:seq_len]
-        x = self.dropout(x)
-        x = x.permute(1, 0, 2)
-        return x
-
-class Transformer_BPM_Regressor(nn.Module):
-    def __init__(
-            self, 
-            input_samples_num: int,
-            conv_kernel_size: int, # Dimensione del kernel convoluzionale
-            conv_stride: int,      # Passo della convoluzione
-            in_channels: int,
-            d_model: int, 
-            head_num: int, 
-            num_encoder_layers: int, 
-            dim_feedforward: int, 
-            dropout: float, 
-        ):
-        super(Transformer_BPM_Regressor, self).__init__()
-        assert input_samples_num % conv_kernel_size == 0
+class CNNFeatureExtractor(nn.Module):
+    def __init__(self, input_length=280, num_channels=2,embed_dim=128):
+        super(CNNFeatureExtractor, self).__init__()
+        assert input_length % 10 == 0, "Input length must be divisible by 10"
+        assert embed_dim % 4 == 0, "Embed dimension must be divisible by 4"
         
-        self.token_number = math.floor((input_samples_num  - conv_kernel_size) / conv_stride) + 1
-        self.in_channels = in_channels
-        
-        
-        self.conv1d_projection = nn.Conv1d(
-            in_channels=in_channels,
-            out_channels=d_model, # L'output channels della conv diventa la dimensione del modello
-            kernel_size=conv_kernel_size,
-            stride=conv_stride,
-            padding=0,
-            # Non usiamo bias=False a meno di usare Batch Norm subito dopo
-        )
-        
-        self.conv_activation = nn.ReLU()
-        
-        # CLS token: a learnable vector
-        self.cls_token = nn.Parameter(torch.randn(1, 1, d_model))
-        
-        # 2. Positional Encoding
-        self.positional_encoding = PositionalEncoding(d_model, dropout, max_len=self.token_number + 11)
+        self.embed_dim = embed_dim
+        self.embed_dim_2 = embed_dim // 2
+        self.embed_dim_4 = embed_dim // 4
+        self.input_length = input_length
+        self.num_channels = num_channels
+        self.patchSize = 10
 
-        # 3. Transformer Encoder
-        self.transformer_encoder = nn.TransformerEncoder(
-            nn.TransformerEncoderLayer(
-                d_model=d_model, 
-                nhead=head_num, 
-                dim_feedforward=dim_feedforward, 
-                dropout=dropout, 
-                batch_first=True
-            ),
-            num_layers=num_encoder_layers
-        )
-        
-        # 4. Regression Head
-        # Dopo l'encoder, abbiamo (batch_size, sequence_length, model_dim).
-        # Aggreghiamo lungo la dimensione della sequenza e mappiamo a 1.
-        self.regression_head = nn.Sequential(
-            nn.LayerNorm(d_model),
-            nn.Linear(d_model, 1) # Output scalare per regressione
-        )
-        
-   
-    def forward(self, x):
+        self.input_reshape_channels = int(self.input_length/self.patchSize) * self.num_channels
 
-        # 1. Proiezione dell'input
-        x = self.conv1d_projection(x)
-        x = self.conv_activation(x)
-  
-        # 2. Trasponi per il Positional Encoding e Transformer (batch_first=True)
-        # Da (batch_size, d_model, new_sequence_length) a (batch_size, new_sequence_length, d_model)
-        x = x.permute(0, 2, 1) # -> (batch_size, new_sequence_length, d_model)
-
-        cls_token = self.cls_token.expand(x.size(0),-1,-1)
-        x = torch.cat((cls_token, x), dim=1)
-         
-        # 2. Aggiunta del Positional Encoding
-        x = self.positional_encoding(x) # -> (batch_size, sequence_length, model_dim)
-
-        # 3. Passaggio attraverso il Transformer Encoder
-        transformer_output = self.transformer_encoder(x) # -> (batch_size, sequence_length, model_dim)
-
-        # # 4. Aggregazione e Regression Head
-        # aggregated_output = torch.mean(transformer_output, dim=1) # -> (batch_size, model_dim)
-
-        # Passa l'output aggregato attraverso lo strato di regressione
-        cls_output = transformer_output[:, 0] # Only the [CLS] token output
-        regression_output = self.regression_head(cls_output) # -> (batch_size, 1)
-
-        return regression_output
-
-class SimpleECGRegressor(nn.Module):
-    def __init__(self, in_channels, input_length):
-        super().__init__()
-        self.net = nn.Sequential(
-            nn.Conv1d(in_channels, 16, kernel_size=5, stride=2),
+        self.convLayers = nn.Sequential(
+            
+            nn.Conv1d(in_channels= self.input_reshape_channels, out_channels=self.embed_dim_4, kernel_size=3, stride=1, padding=1),
+            nn.BatchNorm1d(self.embed_dim_4),
             nn.ReLU(),
-            nn.Conv1d(16, 32, kernel_size=5, stride=2),
+            nn.MaxPool1d(kernel_size=2, stride=2), # Output length: 10 -> 5
+            
+            nn.Conv1d(in_channels=self.embed_dim_4, out_channels=self.embed_dim_2, kernel_size=3, stride=1, padding=1),
+            nn.BatchNorm1d(self.embed_dim_2),
             nn.ReLU(),
-            nn.AdaptiveAvgPool1d(1),
-            nn.Flatten(),
-            nn.Linear(32, 1),
-            nn.Sigmoid()
+            nn.MaxPool1d(kernel_size=3, stride=1),# Output length: 5 -> 3
+            
+            nn.Conv1d(in_channels=self.embed_dim_2, out_channels=self.embed_dim, kernel_size=1, stride=1, padding=0),
+            nn.BatchNorm1d(self.embed_dim),
+            nn.ReLU(),  
         )
-    
-    def forward(self, x):
-        return self.net(x)
-    
-    
 
+    def forward(self, x):
+        
+        batch_size, _, _ = x.shape
+        
+        # Reshape to (batch_size, 10*num_channels, 28)
+        x = x.view(batch_size, self.input_reshape_channels, self.patchSize)
+        return self.convLayers(x)
 
 
 class PatchEmbedding1D(nn.Module):
-    def __init__(self, in_channels, patch_size, emb_dim, signal_length):
+    def __init__(self, in_channels, patch_size, embed_dim):
         super().__init__()
-        assert signal_length % patch_size == 0, "La lunghezza del segnale deve essere divisibile per il patch size."
-        self.patch_size = patch_size
-        self.num_patches = signal_length // patch_size
-        self.proj = nn.Conv1d(in_channels, emb_dim, kernel_size=patch_size, stride=patch_size)
-        self.cls_token = nn.Parameter(torch.randn(1, 1, emb_dim))
-        self.pos_embed = nn.Parameter(torch.randn(1, self.num_patches + 1, emb_dim))
+        self.proj = nn.Conv1d(in_channels, embed_dim, kernel_size=patch_size, stride=patch_size)
 
     def forward(self, x):
         # x: [B, C, L]
-        x = self.proj(x)                      # [B, D, N]
-        x = x.transpose(1, 2)                 # [B, N, D]
-        B, N, D = x.shape
-        cls_token = self.cls_token.expand(B, -1, -1)  # [B, 1, D]
-        x = torch.cat((cls_token, x), dim=1)          # [B, N+1, D]
-        x = x + self.pos_embed                       # Positional embedding
+        x = self.proj(x)  # [B, embed_dim, num_patches]
+        x = x.permute(0, 2, 1)  # [B, num_patches, embed_dim]
         return x
 
-class TransformerEncoderBlock(nn.Module):
-    def __init__(self, emb_dim, num_heads, mlp_dim, dropout=0.1):
+class PositionalEncoding(nn.Module):
+    def __init__(self, embed_dim, max_len=5000):
         super().__init__()
-        self.norm1 = nn.LayerNorm(emb_dim)
-        self.attn = nn.MultiheadAttention(emb_dim, num_heads, dropout=dropout, batch_first=True)
-        self.norm2 = nn.LayerNorm(emb_dim)
-        self.mlp = nn.Sequential(
-            nn.Linear(emb_dim, mlp_dim),
-            nn.GELU(),
-            nn.Dropout(dropout),
-            nn.Linear(mlp_dim, emb_dim),
-            nn.Dropout(dropout)
-        )
+        pe = torch.zeros(max_len, embed_dim)
+        position = torch.arange(0, max_len, dtype=torch.float).unsqueeze(1)
+        div_term = torch.exp(torch.arange(0, embed_dim, 2).float() * (-math.log(10000.0) / embed_dim))
+        pe[:, 0::2] = torch.sin(position * div_term)  # dim pari
+        pe[:, 1::2] = torch.cos(position * div_term)  # dim dispari
+        pe = pe.unsqueeze(0)  # [1, max_len, embed_dim]
+        self.register_buffer('pe', pe)
 
     def forward(self, x):
-        x = x + self.attn(self.norm1(x), self.norm1(x), self.norm1(x))[0]
-        x = x + self.mlp(self.norm2(x))
-        return x
+        # x: [B, num_patches, embed_dim]
+        return x + self.pe[:, :x.size(1)]
 
 
 class ViT1D(nn.Module):
@@ -195,31 +77,122 @@ class ViT1D(nn.Module):
         signal_length: int,
         patch_size: int = 16,
         in_channels: int = 1,
-        emb_dim: int = 128,
-        depth: int = 6,
+        embed_dim: int = 128,
+        num_layers: int = 6,
         num_heads: int = 8,
         mlp_dim: int = 256,
-        classes_output_dim: int = 1,
-        categories_output_dim: int = 1,
+        num_classes: int = 1,
         dropout: float = 0.1
     ):
         super().__init__()
-        self.patch_embed = PatchEmbedding1D(in_channels, patch_size, emb_dim, signal_length)
+        
+        assert signal_length % patch_size == 0, "Signal length must be divisible by patch size."
+        
+        self.patch_embed = PatchEmbedding1D(in_channels, patch_size, embed_dim)
+        num_patches = signal_length // patch_size
+        
+        self.cls_token = nn.Parameter(torch.zeros(1, 1, embed_dim))
+        self.pos_encoding = PositionalEncoding(embed_dim, max_len=num_patches + 1)
+        
+        
+        encoder_layer = nn.TransformerEncoderLayer(
+            d_model=embed_dim, 
+            nhead=num_heads, 
+            dim_feedforward=mlp_dim,
+            dropout=dropout
+        )
+        
+        self.transformer_encoder = nn.TransformerEncoder(
+            encoder_layer, 
+            num_layers=num_layers
+        )
 
-        self.encoder = nn.Sequential(*[
-            TransformerEncoderBlock(emb_dim, num_heads, mlp_dim, dropout)
-            for _ in range(depth)
-        ])
+        self.output_head = nn.Sequential(
+            nn.LayerNorm(embed_dim),
+            nn.Linear(embed_dim, num_classes)
+        )
 
-        self.norm = nn.LayerNorm(emb_dim)
-        self.head1 = nn.Linear(emb_dim, classes_output_dim)
-        self.head2 = nn.Linear(emb_dim, categories_output_dim)
+    def forward(self, x) -> torch.Tensor:
+        # x: [B, C, L]
+        x = self.patch_embed(x)  # [B, num_patches, embed_dim]
+        B, N, E = x.shape
 
-    def forward(self, x) -> Tuple[torch.Tensor, torch.Tensor]:
-        x = self.patch_embed(x)    # [B, N+1, D]
-        x = self.encoder(x)        # [B, N+1, D]
-        x = self.norm(x)           # [B, N+1, D]
-        cls_token = x[:, 0]        # [B, D]
-        x1 = self.head1(cls_token) 
-        x2 = self.head2(cls_token) 
-        return x1, x2
+        cls_tokens = self.cls_token.expand(B, -1, -1)  # [B, 1, embed_dim]
+        x = torch.cat((cls_tokens, x), dim=1)  # [B, N+1, embed_dim]
+        x = self.pos_encoding(x)  # [B, N+1, embed_dim]
+
+        x = x.permute(1, 0, 2)  # Transformer expects [N+1, B, embed_dim]
+        x = self.transformer_encoder(x)  # [N+1, B, embed_dim]
+        x = x[0]  # cls token output: [B, embed_dim]
+
+        return self.output_head(x)  # [B, num_classes]
+    
+    
+class ViT1D_2V(nn.Module):
+    def __init__(
+        self,
+        signal_length: int,
+        in_channels: int = 1,
+        embed_dim: int = 128,
+        num_layers: int = 6,
+        num_heads: int = 8,
+        mlp_dim: int = 256,
+        num_classes: int = 1,
+        dropout: float = 0.1
+    ):
+        super().__init__()
+        
+        #[B, embed_dim, 3]
+        self.feature_extractor = CNNFeatureExtractor(input_length=signal_length, num_channels=in_channels, embed_dim=embed_dim)
+        
+        self.cls_token = nn.Parameter(torch.zeros(1, 1, embed_dim))
+        self.pos_encoding = PositionalEncoding(embed_dim, max_len= 4 + 1)
+        
+        encoder_layer = nn.TransformerEncoderLayer(
+            d_model=embed_dim, 
+            nhead=num_heads, 
+            dim_feedforward=mlp_dim,
+            dropout=dropout
+        )
+        
+        self.transformer_encoder = nn.TransformerEncoder(
+            encoder_layer, 
+            num_layers=num_layers
+        )
+
+        self.output_head = nn.Sequential(
+            nn.LayerNorm(embed_dim),
+            nn.Linear(embed_dim, num_classes)
+        )
+
+    def forward(self, x) -> torch.Tensor:
+        # x: [B, C, L] (e.g., [B, 2, 280])
+
+        # Estrai le feature usando la CNN
+        # output_cnn_features: [B, cnn_embed_dim, num_patches] (e.g., [B, 128, 3])
+        cnn_features = self.feature_extractor(x)
+
+        # Prepara le feature per il Transformer
+        # Transformer si aspetta [B, num_patches, embed_dim]
+        x = cnn_features.permute(0, 2, 1) # [B, num_patches, cnn_embed_dim]
+        B, N, _ = x.shape
+        assert N == 3, f"Expected 3 patches, got {x.shape}"
+
+        cls_tokens = self.cls_token.expand(B, -1, -1)  # [B, 1, cnn_embed_dim]
+        x = torch.cat((cls_tokens, x), dim=1)  # [B, N+1, cnn_embed_dim]
+        x = self.pos_encoding(x)  # [B, N+1, cnn_embed_dim]
+
+        x = x.permute(1, 0, 2)  # Transformer expects [N+1, B, cnn_embed_dim]
+        x = self.transformer_encoder(x)  # [N+1, B, cnn_embed_dim]
+        x = x[0]  # cls token output: [B, cnn_embed_dim]
+
+        return self.output_head(x)  # [B, num_classes]
+    
+    
+class ViT1D_2V_CLASSES(ViT1D_2V):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        
+class ViT1D_2V_CATEGORIES(ViT1D_2V):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)

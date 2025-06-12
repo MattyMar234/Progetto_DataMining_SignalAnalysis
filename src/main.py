@@ -8,7 +8,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.optim import lr_scheduler
-from sklearn.metrics import confusion_matrix, f1_score, precision_score, accuracy_score
+from sklearn.metrics import confusion_matrix, f1_score, precision_score, accuracy_score, recall_score
 from sklearn.metrics import (
     confusion_matrix, precision_recall_fscore_support,
     accuracy_score, cohen_kappa_score, classification_report
@@ -18,15 +18,13 @@ import seaborn as sns
 import numpy as np
 
 
-from NN_component.VisionTransformer import ViT1D
-from NN_component.VisionTransformer2 import ViT1D_2
+from NN_component.VisionTransformer import ViT1D, ViT1D_2V, ViT1D_2V_CATEGORIES, ViT1D_2V_CLASSES
 from NN_component.resNet import *
 from dataset.dataset import DatasetChannels, DatasetDataMode, DatasetMode, MITBIHDataset, BeatType
 from dataset.datamodule import Mitbih_datamodule
 import os
 
-from NN_component.weightedMSELoss import WeightedMSELoss
-from NN_component.model import SimpleECGRegressor, Transformer_BPM_Regressor
+
 from setting import *
 import setting
 
@@ -718,98 +716,147 @@ def test_model(
   
 def evaluate_model(
     model: nn.Module,
-    dataloader: torch.utils.data.DataLoader,
+    datamodule: Mitbih_datamodule,
     device: torch.device,
-    class_labels: list,
-    category_labels: list,
-    class_to_ignore: int,
-    category_to_ignore: int,
-    class_label_mapper,
-    category_label_mapper,
+    checkpoint_path: str,
+    training_mode: TRAINING_MODE,
     output_dir: str,
-    name: str = "eval"
-):
-    model.eval()
+    name: str = "test_evaluation"
+) -> dict:
+    """
+    Valuta il modello sul dataset di test e restituisce metriche dettagliate.
+
+    Args:
+        model (nn.Module): Il modello da valutare.
+        datamodule (Mitbih_datamodule): Il DataModule contenente il test_dataloader.
+        device (torch.device): Il dispositivo su cui eseguire la valutazione (es. 'cuda' o 'cpu').
+        checkpoint_path (str): Percorso del checkpoint del modello da caricare.
+        training_mode (TRAINING_MODE): Il tipo di valutazione da effettuare (CLASSES o CATEGORIES).
+        output_dir (str): Directory dove salvare le matrici di confusione.
+        name (str): Nome per l'identificazione della valutazione (es. 'test_set').
+
+    Returns:
+        dict: Un dizionario contenente le metriche di valutazione per classe/categoria e complessive.
+    """
+
     model.to(device)
+    APP_LOGGER.info(f"Caricamento checkpoint da {checkpoint_path}")
+    checkpoint_data = torch.load(checkpoint_path, map_location=device)
+    model.load_state_dict(checkpoint_data['model_state_dict'])
+    model.eval()
 
-    all_class_preds = []
-    all_class_targets = []
-    all_category_preds = []
-    all_category_targets = []
+    test_dataloader = datamodule.test_dataloader()
 
-    with torch.no_grad():
-        for signals, class_targets, category_targets in tqdm(dataloader, desc=f"Evaluating {name}"):
-            signals = signals.to(device)
-            class_targets = class_targets.squeeze(1).long().to(device)
-            category_targets = category_targets.squeeze(1).long().to(device)
+    all_preds = []
+    all_targets = []
 
-            outputs = model(signals)
-            class_preds = torch.argmax(outputs[0], dim=1)
-            category_preds = torch.argmax(outputs[1], dim=1)
+    # Get ignore index and labels based on training mode
+    if training_mode == TRAINING_MODE.CLASSES:
+        ignore_index = BeatType.get_ignore_class_value()
+        unique_labels = [i for i in range(BeatType.num_classes()) if i != ignore_index]
+        label_mapper = BeatType.mapBeatClass_to_Label
+        evaluation_type_str = "Classi"
+    elif training_mode == TRAINING_MODE.CATEGORIES:
+        ignore_index = BeatType.get_ignore_category_value()
+        unique_labels = [i for i in range(BeatType.num_of_category()) if i != ignore_index]
+        label_mapper = BeatType.mapBeatCategory_to_Label
+        evaluation_type_str = "Categorie"
+    else:
+        raise ValueError("training_mode deve essere TRAINING_MODE.CLASSES o TRAINING_MODE.CATEGORIES")
 
-            valid_class_mask = (class_targets != class_to_ignore)
-            valid_category_mask = (category_targets != category_to_ignore)
+    APP_LOGGER.info(f"Avvio valutazione sul set di test per {evaluation_type_str}...")
 
-            all_class_preds.extend(class_preds[valid_class_mask].cpu().numpy())
-            all_class_targets.extend(class_targets[valid_class_mask].cpu().numpy())
+    with torch.no_grad(): 
+        for signals, class_labels, category_labels in tqdm(test_dataloader, desc=f"Valutazione {name}"): 
+            signals = signals.to(device) 
 
-            all_category_preds.extend(category_preds[valid_category_mask].cpu().numpy())
-            all_category_targets.extend(category_targets[valid_category_mask].cpu().numpy())
+            if training_mode == TRAINING_MODE.CLASSES:
+                targets = class_labels.squeeze(1).long().to(device) 
+            else: # TRAINING_MODE.CATEGORIES
+                targets = category_labels.squeeze(1).long().to(device) 
 
-    # CLASS METRICS
-    unique_class_labels = [i for i in range(len(class_labels)) if i != class_to_ignore]
-    cm_class = confusion_matrix(all_class_targets, all_class_preds, labels=unique_class_labels)
+            outputs = model(signals) # Assuming model outputs logits for the respective task 
+            
+            # If the model outputs both classes and categories, select the correct one
+            # This part might need adjustment based on the actual model output structure.
+            # For ViT1D_2V_CATEGORIES and ViT1D_2V_CLASSES, model(signals) directly outputs the relevant logits.
+            # If the model is a multi-head model (e.g., outputs[0] for classes, outputs[1] for categories),
+            # this part needs to be updated.
+            # Based on training_classification, it seems `outputs = model(signal)` is directly the logits.
+            
+            preds = torch.argmax(outputs, dim=1) 
+
+            # Filter out ignored indices before collecting
+            valid_mask = (targets != ignore_index)
+            all_preds.extend(preds[valid_mask].cpu().numpy())
+            all_targets.extend(targets[valid_mask].cpu().numpy())
+
+    # Calculate metrics
+    results = {}
+
+    # Per-class/category metrics
+    precision_per_label, recall_per_label, f1_per_label, support_per_label = precision_recall_fscore_support(
+        all_targets, all_preds, labels=unique_labels, average=None, zero_division=0
+    ) 
+
+    APP_LOGGER.info(f"\n--- REPORT DI VALUTAZIONE: {name.upper()} ({evaluation_type_str}) ---")
+    APP_LOGGER.info(f"\n-> RISULTATI PER {evaluation_type_str.upper()}:")
+
+    per_label_metrics = {}
+    for i, label_idx in enumerate(unique_labels):
+        label_name = label_mapper(label_idx)
+        num_instances = support_per_label[i]
+        precision = precision_per_label[i]
+        recall = recall_per_label[i]
+        f1 = f1_per_label[i]
+        
+        # Calculate Kappa for each class if needed, or stick to overall Kappa
+        # For simplicity, we calculate overall Kappa and report per-class P/R/F1.
+        # Per-class Kappa can be ambiguous and is often not a standard metric.
+
+        APP_LOGGER.info(f"{evaluation_type_str} {label_name}: Istanze={int(num_instances)}, Precision={precision:.4f}, Recall={recall:.4f}, F1={f1:.4f}")
+        per_label_metrics[label_name] = {
+            "Instances": int(num_instances),
+            "Precision": precision,
+            "Recall": recall,
+            "F1-Score": f1,
+        }
+    results["per_label_metrics"] = per_label_metrics
+
+    # Weighted Average metrics
+    weighted_precision = precision_score(all_targets, all_preds, average='weighted', labels=unique_labels, zero_division=0)
+    weighted_recall = recall_score(all_targets, all_preds, average='weighted', labels=unique_labels, zero_division=0)
+    weighted_f1 = f1_score(all_targets, all_preds, average='weighted', labels=unique_labels, zero_division=0)
+
+    APP_LOGGER.info(f"\nWeighted Avg ({evaluation_type_str}): Precision={weighted_precision:.4f}, Recall={weighted_recall:.4f}, F1={weighted_f1:.4f}")
+    results["weighted_average"] = {
+        "Precision": weighted_precision,
+        "Recall": weighted_recall,
+        "F1-Score": weighted_f1,
+    }
+
+    # Overall Accuracy and Kappa
+    overall_accuracy = accuracy_score(all_targets, all_preds)
+    overall_kappa = cohen_kappa_score(all_targets, all_preds)
+
+    APP_LOGGER.info(f"Overall Accuracy ({evaluation_type_str}): {overall_accuracy:.4f}, Overall Kappa: {overall_kappa:.4f}")
+    results["overall_metrics"] = {
+        "Accuracy": overall_accuracy,
+        "Kappa": overall_kappa,
+    }
+
+    # Confusion Matrix Plotting
+    cm = confusion_matrix(all_targets, all_preds, labels=unique_labels)
     plot_confusion_matrix(
-        cm_class,
-        [class_label_mapper(i) for i in unique_class_labels],
-        f"Confusion Matrix - Classes ({name})",
-        os.path.join(output_dir, f"confusion_matrix_class_{name}.png")
+        cm,
+        [label_mapper(i) for i in unique_labels],
+        f"Matrice di Confusione - {evaluation_type_str} ({name})",
+        os.path.join(output_dir, f"confusion_matrix_{name}_{evaluation_type_str.lower()}.png"),
+        normalized=True
     )
+    APP_LOGGER.info(f"Matrice di confusione salvata in: {os.path.join(output_dir, f'confusion_matrix_{name}_{evaluation_type_str.lower()}.png')}")
 
-    precision_c, recall_c, f1_c, _ = precision_recall_fscore_support(
-        all_class_targets, all_class_preds, labels=unique_class_labels, average=None, zero_division=0
-    )
-    acc_c = accuracy_score(all_class_targets, all_class_preds)
-    kappa_c = cohen_kappa_score(all_class_targets, all_class_preds)
-
-    weighted_avg_class = plot_confusion_matrix(
-        all_class_targets, all_class_preds, labels=unique_class_labels, average="weighted", zero_division=0
-    )
-
-    # CATEGORY METRICS
-    unique_category_labels = [i for i in range(len(category_labels)) if i != category_to_ignore]
-    cm_cat = confusion_matrix(all_category_targets, all_category_preds, labels=unique_category_labels)
-    plot_confusion_matrix(
-        cm_cat,
-        [category_label_mapper(i) for i in unique_category_labels],
-        f"Confusion Matrix - Categories ({name})",
-        os.path.join(output_dir, f"confusion_matrix_category_{name}.png")
-    )
-
-    precision_t, recall_t, f1_t, _ = precision_recall_fscore_support(
-        all_category_targets, all_category_preds, labels=unique_category_labels, average=None, zero_division=0
-    )
-    acc_t = accuracy_score(all_category_targets, all_category_preds)
-    kappa_t = cohen_kappa_score(all_category_targets, all_category_preds)
-
-    weighted_avg_category = precision_recall_fscore_support(
-        all_category_targets, all_category_preds, labels=unique_category_labels, average="weighted", zero_division=0
-    )
-
-    # Report
-    APP_LOGGER.info(f"\n--- EVALUATION REPORT: {name.upper()} ---")
-    APP_LOGGER.info(f"\n-> CLASS RESULTS:")
-    for i, idx in enumerate(unique_class_labels):
-        APP_LOGGER.info(f"Class {class_label_mapper(idx)}: Precision={precision_c[i]:.4f}, Recall={recall_c[i]:.4f}, F1={f1_c[i]:.4f}")
-    APP_LOGGER.info(f"Weighted Avg (Class): Precision={weighted_avg_class[0]:.4f}, Recall={weighted_avg_class[1]:.4f}, F1={weighted_avg_class[2]:.4f}")
-    APP_LOGGER.info(f"Overall Accuracy (Class): {acc_c:.4f}, Kappa: {kappa_c:.4f}")
-
-    APP_LOGGER.info(f"\n-> CATEGORY RESULTS:")
-    for i, idx in enumerate(unique_category_labels):
-        APP_LOGGER.info(f"Category {category_label_mapper(idx)}: Precision={precision_t[i]:.4f}, Recall={recall_t[i]:.4f}, F1={f1_t[i]:.4f}")
-    APP_LOGGER.info(f"Weighted Avg (Category): Precision={weighted_avg_category[0]:.4f}, Recall={weighted_avg_category[1]:.4f}, F1={weighted_avg_category[2]:.4f}")
-    APP_LOGGER.info(f"Overall Accuracy (Category): {acc_t:.4f}, Kappa: {kappa_t:.4f}")
-
+    return results
 
 def main():
 
@@ -879,20 +926,47 @@ def main():
         #     ),
         #     TRAINING_MODE.CLASSES  
         # ),
-        (
-            ResNet1D_50_Categories(
-                in_channels_signal=channels_enum.value,
-                categories_output_dim=BeatType.num_of_category()
-            ),
-            TRAINING_MODE.CATEGORIES
-        ),
-        (
-            ResNet1D_50_Classes(
-                in_channels_signal=channels_enum.value,
-                classes_output_dim=BeatType.num_classes()
-            ),
-            TRAINING_MODE.CLASSES  
-        )
+        # (
+        #     ResNet1D_50_Categories(
+        #         in_channels_signal=channels_enum.value,
+        #         categories_output_dim=BeatType.num_of_category()
+        #     ),
+        #     TRAINING_MODE.CATEGORIES
+        # ),
+        # (
+        #     ResNet1D_50_Classes(
+        #         in_channels_signal=channels_enum.value,
+        #         classes_output_dim=BeatType.num_classes()
+        #     ),
+        #     TRAINING_MODE.CLASSES  
+        # ),
+        # (
+        #     ViT1D_2V_CATEGORIES(
+        #         signal_length = sample_per_window,
+        #         in_channels=channels_enum.value,
+        #         embed_dim=128,
+        #         num_layers=4,
+        #         num_heads=4,
+        #         mlp_dim=256,
+        #         num_classes=BeatType.num_of_category(),
+        #         dropout = 0.1
+        #     ),
+        #     TRAINING_MODE.CATEGORIES
+        # ),
+        # (
+        #     ViT1D_2V_CLASSES(
+        #         signal_length = sample_per_window,
+        #         in_channels=channels_enum.value,
+        #         embed_dim=128,
+        #         num_layers=4,
+        #         num_heads=4,
+        #         mlp_dim=256,
+        #         num_classes=BeatType.num_classes(),
+        #         dropout = 0.1
+        #     ),
+        #     TRAINING_MODE.CLASSES
+        # )
+        
         
 
         # ViT1D(
@@ -908,17 +982,7 @@ def main():
         #     dropout = 0.3
         # )
         
-        # ViT1D_2(
-        #     signal_length = sample_per_window,
-        #     in_channels=channels_enum.value,
-        #     emb_dim=128,
-        #     depth=10,
-        #     num_heads=16,
-        #     mlp_dim=128*4,
-        #     classes_output_dim=BeatType.num_classes(),
-        #     categories_output_dim=BeatType.num_of_category(),
-        #     dropout = 0.3
-        # )
+        
     ]
     
     dataModule = Mitbih_datamodule(
@@ -928,7 +992,7 @@ def main():
         sample_rate=sample_rate, 
         sample_per_window=sample_per_window,
         num_workers=4,
-        batch_size=128*(2 // channels_enum.value)#12
+        batch_size=32#12
     )
     
     
@@ -954,25 +1018,45 @@ def main():
     device: torch.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     APP_LOGGER.info(f"Utilizzando dispositivo: {device}")
     
-    for (model, mode) in models:
-        # APP_LOGGER.info("Architettura del Modello:")
-        APP_LOGGER.info(f"Training del Modello {model.__class__.__name__} per {mode}")
+    # for (model, mode) in models:
+    #     # APP_LOGGER.info("Architettura del Modello:")
+    #     APP_LOGGER.info(f"Training del Modello {model.__class__.__name__} per {mode}")
         
-        training_classification(
-            start_lr=args.lr,
-            training_mode= mode,
-            device = device,
-            dataModule = dataModule,
-            model = model,
-            num_epochs = args.num_epochs,
-            training_log_path=os.path.join(setting.LOGS_FOLDER, 'training_logs.txt'),
-            checkpoint_dir = os.path.join(setting.OUTPUT_PATH, model.__class__.__name__),
-            confusion_matrix_dir=os.path.join(setting.OUTPUT_PATH, model.__class__.__name__)#setting.LOGS_FOLDER
-            #checkpoint = "/app/Data/Models/Epoch[1]_Loss[inf].pth"
+    #     training_classification(
+    #         start_lr=args.lr,
+    #         training_mode= mode,
+    #         device = device,
+    #         dataModule = dataModule,
+    #         model = model,
+    #         num_epochs = args.num_epochs,
+    #         training_log_path=os.path.join(setting.LOGS_FOLDER, 'training_logs.txt'),
+    #         checkpoint_dir = os.path.join(setting.OUTPUT_PATH, model.__class__.__name__),
+    #         confusion_matrix_dir=os.path.join(setting.OUTPUT_PATH, model.__class__.__name__)#setting.LOGS_FOLDER
+    #         #checkpoint = "/app/Data/Models/Epoch[1]_Loss[inf].pth"
         
-        )
+    #     )
+    
+    
+    model = ViT1D_2V_CATEGORIES(
+        signal_length = sample_per_window,
+        in_channels=channels_enum.value,
+        embed_dim=128,
+        num_layers=4,
+        num_heads=4,
+        mlp_dim=256,
+        num_classes=BeatType.num_of_category(),
+        dropout = 0.1
+    )
 
-
+    evaluate_model(
+        model=model,
+        datamodule=dataModule,
+        device=device,
+        checkpoint_path='/app/Data/Models/ViT1D_2V_CATEGORIES/Epoch[60]_Loss[0.0901].pth',
+        training_mode=TRAINING_MODE.CATEGORIES,
+        output_dir=os.path.join(args.output_path, "evaluation_results"),
+        name="test categories"
+    )
     
     # test_model(
     #     device = device,
