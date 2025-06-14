@@ -85,6 +85,7 @@ def trainModel(
     #ottimizzatore
     optimizer = optim.Adam(model.parameters(), lr=start_lr)
     
+    
     #Inizializza lo scheduler
     scheduler = lr_scheduler.ReduceLROnPlateau(
         optimizer,
@@ -264,7 +265,11 @@ def trainModel(
 #     plt.close()
 
 def plot_confusion_matrix(cm, class_labels, epoch, output_dir, normalized=True, filename_prefix="confusion_matrix"):
-    plt.figure(figsize=(12, 12))
+    
+    n = len(class_labels)
+    s = int(2*n if n < 7 else 1.1*n)  # Dimensione della figura in base al numero di classi
+    
+    plt.figure(figsize=(s, s))
 
     if normalized:
         # cm_normalized = cm.astype("float") / cm.sum(axis=1, keepdims=True)
@@ -624,96 +629,6 @@ def save_top_checkpoints(avg_val_loss, epoch, model, optimizer, scheduler, check
     return top_checkpoints  # opzionale, per debug/logging
 
 
-def test_model(
-    device: torch.device, 
-    datamodule: Mitbih_datamodule, 
-    model: nn.Module, 
-    checkpoint: str,
-    task_type: str = "regression" # Add task_type to differentiate
-    ):
-    
-    model.to(device)
-    
-    if task_type == "regression":
-        loss_function = nn.MSELoss()
-    elif task_type == "classification":
-        # For testing classification, we might not need weights, but ignore_index is crucial
-        loss_function = nn.CrossEntropyLoss(ignore_index=6) 
-    else:
-        raise ValueError("Invalid task_type for test_model. Must be 'regression' or 'classification'.")
-
-    model.eval()
-
-    total_test_loss = 0  # Accumula la loss per l'intero set di test
-    total_test_mae = 0   # Accumula MAE per l'intero set di test
-    num_samples = 0      # Conta il numero totale di campioni elaborati
-
-   
-    APP_LOGGER.info(f"Caricamento checkpoint da {checkpoint}")
-    checkpoint_data = torch.load(checkpoint, map_location=device)
-    model.load_state_dict(checkpoint_data['model_state_dict'])
-   
-    test_dataloader = datamodule.test_dataloader()
-    batch_size = test_dataloader.batch_size
-    # Disabilita il calcolo dei gradienti durante la valutazione
-    
-    APP_LOGGER.info("Avvio valutazione sul set di test...")
-    with torch.no_grad():
-        # Utilizza tqdm per visualizzare l'avanzamento della valutazione
-        #test_loop = tqdm(test_dataloader, desc="Valutazione Test Set")
-
-        for batch_idx, (signal, bpm) in enumerate(test_dataloader):
- 
-            # Sposta i dati e le etichette sul dispositivo
-            signal = signal.to(device)
-            # Assicurati che le etichette target siano float e sul dispositivo
-            bpm = bpm.to(device).float()
-
-            # Forward pass
-            outputs = model(signal)
-            
-            
-
-            # Calcola la loss del batch (per l'accumulo)
-            #loss = loss_function(outputs, bpm)
-            
-            for i in range(batch_size):
-                APP_LOGGER.info(f"Target: {bpm[i]} Predected: {outputs[i]} Loss: -")
-
-            print()
-
-            # Calcola MAE per il batch
-            mae = torch.mean(torch.abs(outputs - bpm))
-
-            # Accumula le metriche, pesate per la dimensione del batch corrente
-            batch_size = signal.size(0)
-            #total_test_loss += loss.item() * batch_size
-            total_test_mae += mae.item() * batch_size
-            num_samples += batch_size
-
-            # Aggiorna la descrizione di tqdm con la loss corrente del batch
-            #test_loop.set_description(f"Valutazione Test Set Loss: {loss.item():.4f}")
-
-
-    # Calcola le metriche medie sull'intero set di test
-    avg_test_loss = total_test_loss / num_samples
-    avg_test_mae = total_test_mae / num_samples
-    avg_test_rmse = math.sqrt(avg_test_loss) # RMSE è la radice quadrata dell'MSE medio
-
-    APP_LOGGER.info("\n--- Risultati Test Set ---")
-    APP_LOGGER.info(f"Test Loss (MSE): {avg_test_loss:.6f}")
-    APP_LOGGER.info(f"Test MAE: {avg_test_mae:.6f}")
-    APP_LOGGER.info(f"Test RMSE: {avg_test_rmse:.6f}")
-    APP_LOGGER.info("--------------------------")
-
-    metrics = {
-        'test_loss': avg_test_loss,
-        'test_mae': avg_test_mae,
-        'test_rmse': avg_test_rmse
-    }
-
-    return metrics
-  
 def evaluate_model(
     model: nn.Module,
     datamodule: Mitbih_datamodule,
@@ -879,9 +794,6 @@ def main():
     parser.add_argument("--mode", type=str, choices=["training", "test"], default="training", help="Modalità di esecuzione: 'training' o 'test' (default: 'training')")
     parser.add_argument("--lr", type=float, default=LEARNING_RATE, help=f"Valore iniziale del learning rate (default: {LEARNING_RATE})")
 
-    # Configurazioni del segnale
-    parser.add_argument("--window_size", type=int, default=WINDOW_SIZE, help=f"Dimensione della finestra del segnale in secondi (default: {WINDOW_SIZE})")
-    parser.add_argument("--window_stride", type=int, default=WINDOW_STRIDE, help=f"Stride della finestra del segnale in secondi (default: {WINDOW_STRIDE})")
     args = parser.parse_args()
     
 
@@ -889,8 +801,8 @@ def main():
     
     # Calcola i parametri del dataset in base alla frequenza di campionamento
     sample_rate = 360
-    sample_per_window = sample_rate * args.window_size
-    sample_per_side = sample_rate * args.window_stride
+    #sample_per_window = sample_rate * args.window_size
+    #sample_per_side = sample_rate * args.window_stride
     channels_enum = DatasetChannels.TWO
     
     sample_per_window = 280 #int(sample_rate*0.6),#args.window_size,
@@ -898,19 +810,20 @@ def main():
     
     models: List[Tuple[nn.Module, TRAINING_MODE]] = [
     
-        # (
-        #     ResNet1D_18_Classes(
-        #         in_channels_signal=channels_enum.value,
-        #         classes_output_dim=BeatType.num_classes()
-        #     ),
-        #     TRAINING_MODE.CLASSES  
-        # ),
+        
         # (
         #     ResNet1D_18_Categories(
         #         in_channels_signal=channels_enum.value,
         #         categories_output_dim=BeatType.num_of_category()
         #     ),
         #     TRAINING_MODE.CATEGORIES
+        # ),
+        # (
+        #     ResNet1D_18_Classes(
+        #         in_channels_signal=channels_enum.value,
+        #         classes_output_dim=BeatType.num_classes()
+        #     ),
+        #     TRAINING_MODE.CLASSES  
         # ),
         # (
         #     ResNet1D_34_Categories(
@@ -965,22 +878,22 @@ def main():
         #         dropout = 0.1
         #     ),
         #     TRAINING_MODE.CLASSES
-        # )
+        # ),
         
         
-
-        # ViT1D(
-        #     signal_length = sample_per_window,
-        #     patch_size = 12,
-        #     in_channels=channels_enum.value,
-        #     emb_dim=150,
-        #     depth=10,
-        #     num_heads=10,
-        #     mlp_dim=150*3,
-        #     classes_output_dim=BeatType.num_classes(),
-        #     categories_output_dim=BeatType.num_of_category(),
-        #     dropout = 0.3
-        # )
+        (
+            ViT1D(
+                signal_length = sample_per_window,
+                patch_size = 10,
+                in_channels=channels_enum.value,
+                embed_dim=128,
+                num_layers=4,
+                num_heads=4,
+                mlp_dim=128*2,
+                num_classes=BeatType.num_of_category(),
+                dropout = 0.1
+            ),TRAINING_MODE.CATEGORIES
+        )
         
         
     ]
@@ -996,75 +909,105 @@ def main():
     )
     
     
-
-    # model = Transformer_BPM_Regressor(
-    #     input_samples_num=args.window_size*sample_rate,
-    #     in_channels=2,
-    #     conv_kernel_size=200,
-    #     conv_stride=200,
-    #     d_model=args.d_model,
-    #     head_num=8,
-    #     num_encoder_layers=8,
-    #     dim_feedforward=args.dff,
-    #     dropout=args.dropout_rate,
-    # )
     
-    # model = SimpleECGRegressor(
-    #     in_channels=2,
-    #     input_length=args.window_size*sample_rate
-    # )
+
     
     
     device: torch.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     APP_LOGGER.info(f"Utilizzando dispositivo: {device}")
     
-    # for (model, mode) in models:
-    #     # APP_LOGGER.info("Architettura del Modello:")
-    #     APP_LOGGER.info(f"Training del Modello {model.__class__.__name__} per {mode}")
+    for (model, mode) in models:
+        # APP_LOGGER.info("Architettura del Modello:")
+        APP_LOGGER.info(f"Training del Modello {model.__class__.__name__} per {mode}")
         
-    #     training_classification(
-    #         start_lr=args.lr,
-    #         training_mode= mode,
-    #         device = device,
-    #         dataModule = dataModule,
-    #         model = model,
-    #         num_epochs = args.num_epochs,
-    #         training_log_path=os.path.join(setting.LOGS_FOLDER, 'training_logs.txt'),
-    #         checkpoint_dir = os.path.join(setting.OUTPUT_PATH, model.__class__.__name__),
-    #         confusion_matrix_dir=os.path.join(setting.OUTPUT_PATH, model.__class__.__name__)#setting.LOGS_FOLDER
-    #         #checkpoint = "/app/Data/Models/Epoch[1]_Loss[inf].pth"
+        training_classification(
+            start_lr=args.lr,
+            training_mode= mode,
+            device = device,
+            dataModule = dataModule,
+            model = model,
+            num_epochs = args.num_epochs,
+            training_log_path=os.path.join(setting.LOGS_FOLDER, 'training_logs.txt'),
+            checkpoint_dir = os.path.join(setting.OUTPUT_PATH, model.__class__.__name__),
+            confusion_matrix_dir=os.path.join(setting.OUTPUT_PATH, model.__class__.__name__)#setting.LOGS_FOLDER
+            #checkpoint = "/app/Data/Models/Epoch[1]_Loss[inf].pth"
         
-    #     )
+        )
     
     
-    model = ViT1D_2V_CATEGORIES(
-        signal_length = sample_per_window,
-        in_channels=channels_enum.value,
-        embed_dim=128,
-        num_layers=4,
-        num_heads=4,
-        mlp_dim=256,
-        num_classes=BeatType.num_of_category(),
-        dropout = 0.1
-    )
+    
 
-    evaluate_model(
-        model=model,
-        datamodule=dataModule,
-        device=device,
-        checkpoint_path='/app/Data/Models/ViT1D_2V_CATEGORIES/Epoch[60]_Loss[0.0901].pth',
-        training_mode=TRAINING_MODE.CATEGORIES,
-        output_dir=os.path.join(args.output_path, "evaluation_results"),
-        name="test categories"
-    )
-    
-    # test_model(
-    #     device = device,
-    #     datamodule = dataModule,
-    #     model = model,
-    #     checkpoint = "/app/Data/Models/Epoch[8]_Loss[2.2832].pth"
+    # evaluate_model(
+    #     model=models[0][0],
+    #     datamodule=dataModule,
+    #     device=device,
+    #     checkpoint_path='/app/Data/Models/ResNet1D_18_Categories/Epoch[34]_Loss[0.0896].pth',
+    #     training_mode=TRAINING_MODE.CATEGORIES,
+    #     output_dir=os.path.join(args.output_path, "evaluation_results"),
+    #     name="test_categories_resnet18"
     # )
     
+    # evaluate_model(
+    #     model=models[1][0],
+    #     datamodule=dataModule,
+    #     device=device,
+    #     checkpoint_path='/app/Data/Models/ResNet1D_18_Classes/Epoch[24]_Loss[0.1168].pth',
+    #     training_mode=TRAINING_MODE.CLASSES,
+    #     output_dir=os.path.join(args.output_path, "evaluation_results"),
+    #     name="test_classes_resnet18"
+    # )
+    
+    # evaluate_model(
+    #     model=models[2][0],
+    #     datamodule=dataModule,
+    #     device=device,
+    #     checkpoint_path='/app/Data/Models/ResNet1D_34_Categories/Epoch[23]_Loss[0.0856].pth',
+    #     training_mode=TRAINING_MODE.CATEGORIES,
+    #     output_dir=os.path.join(args.output_path, "evaluation_results"),
+    #     name="test_categories_resnet34"
+    # )
+    
+    # # evaluate_model(
+    # #     model=models[3],
+    # #     datamodule=dataModule,
+    # #     device=device,
+    # #     checkpoint_path='/app/Data/Models/ResNet1D_18_Classes/Epoch[24]_Loss[0.1168].pth',
+    # #     training_mode=TRAINING_MODE.CLASSES,
+    # #     output_dir=os.path.join(args.output_path, "evaluation_results"),
+    # #     name="test_classes_resnet18"
+    # # )
+    
+    # evaluate_model(
+    #     model=models[4][0],
+    #     datamodule=dataModule,
+    #     device=device,
+    #     checkpoint_path='/app/Data/Models/ResNet1D_50_Categories/Epoch[28]_Loss[0.0894].pth',
+    #     training_mode=TRAINING_MODE.CATEGORIES,
+    #     output_dir=os.path.join(args.output_path, "evaluation_results"),
+    #     name="test_categories_resnet50"
+    # )
+    
+    # # evaluate_model(
+    # #     model=models[5],
+    # #     datamodule=dataModule,
+    # #     device=device,
+    # #     checkpoint_path='/app/Data/Models/ResNet1D_18_Classes/Epoch[24]_Loss[0.1168].pth',
+    # #     training_mode=TRAINING_MODE.CLASSES,
+    # #     output_dir=os.path.join(args.output_path, "evaluation_results"),
+    # #     name="test_classes_resnet18"
+    # # )
+    
+    # evaluate_model(
+    #     model=models[6][0],
+    #     datamodule=dataModule,
+    #     device=device,
+    #     checkpoint_path='/app/Data/Models/ViT1D_2V_CATEGORIES/Epoch[28]_Loss[0.0833].pth',
+    #     training_mode=TRAINING_MODE.CATEGORIES,
+    #     output_dir=os.path.join(args.output_path, "evaluation_results"),
+    #     name="test_categories_ViT_v2"
+    # )
+    
+   
    
 
 if __name__ == "__main__":
