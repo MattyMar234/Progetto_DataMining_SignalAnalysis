@@ -895,6 +895,20 @@ def main():
             ),TRAINING_MODE.CATEGORIES
         )
         
+        # (
+        #     ViT1D(
+        #         signal_length = sample_per_window,
+        #         patch_size = 10,
+        #         in_channels=channels_enum.value,
+        #         embed_dim=256,
+        #         num_layers=6,
+        #         num_heads=8,
+        #         mlp_dim=256*2,
+        #         num_classes=BeatType.num_of_category(),
+        #         dropout = 0.1
+        #     ),TRAINING_MODE.CATEGORIES
+        # )
+        
         
     ]
     
@@ -905,8 +919,38 @@ def main():
         sample_rate=sample_rate, 
         sample_per_window=sample_per_window,
         num_workers=4,
-        batch_size=32#12
+        batch_size=16#12
     )
+    
+    # dataModule.print_window(
+    #     dir_save_path='/app/Data/BEATS/F.png',
+    #     dataset=dataModule.get_train_dataset(),
+    #     index='F',
+    #     show_plot=False,
+    # )
+    
+    # dataModule.print_window(
+    #     dir_save_path='/app/Data/BEATS/E.png',
+    #     dataset=dataModule.get_train_dataset(),
+    #     index='E',
+    #     show_plot=False,
+    # )
+    
+    # dataModule.print_window(
+    #     dir_save_path='/app/Data/BEATS/L.png',
+    #     dataset=dataModule.get_train_dataset(),
+    #     index='L',
+    #     show_plot=False,
+    # )
+    
+    # dataModule.print_window(
+    #     dir_save_path='/app/Data/BEATS/A.png',
+    #     dataset=dataModule.get_train_dataset(),
+    #     index='A',
+    #     show_plot=False,
+    # )
+    
+    # return
     
     
     
@@ -916,23 +960,23 @@ def main():
     device: torch.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     APP_LOGGER.info(f"Utilizzando dispositivo: {device}")
     
-    for (model, mode) in models:
-        # APP_LOGGER.info("Architettura del Modello:")
-        APP_LOGGER.info(f"Training del Modello {model.__class__.__name__} per {mode}")
+    # for (model, mode) in models:
+    #     # APP_LOGGER.info("Architettura del Modello:")
+    #     APP_LOGGER.info(f"Training del Modello {model.__class__.__name__} per {mode}")
         
-        training_classification(
-            start_lr=args.lr,
-            training_mode= mode,
-            device = device,
-            dataModule = dataModule,
-            model = model,
-            num_epochs = args.num_epochs,
-            training_log_path=os.path.join(setting.LOGS_FOLDER, 'training_logs.txt'),
-            checkpoint_dir = os.path.join(setting.OUTPUT_PATH, model.__class__.__name__),
-            confusion_matrix_dir=os.path.join(setting.OUTPUT_PATH, model.__class__.__name__)#setting.LOGS_FOLDER
-            #checkpoint = "/app/Data/Models/Epoch[1]_Loss[inf].pth"
+    #     training_classification(
+    #         start_lr=args.lr,
+    #         training_mode= mode,
+    #         device = device,
+    #         dataModule = dataModule,
+    #         model = model,
+    #         num_epochs = args.num_epochs,
+    #         training_log_path=os.path.join(setting.LOGS_FOLDER, 'training_logs.txt'),
+    #         checkpoint_dir = os.path.join(setting.OUTPUT_PATH, model.__class__.__name__),
+    #         confusion_matrix_dir=os.path.join(setting.OUTPUT_PATH, model.__class__.__name__)#setting.LOGS_FOLDER
+    #         #checkpoint = "/app/Data/Models/Epoch[1]_Loss[inf].pth"
         
-        )
+    #     )
     
     
     
@@ -1006,6 +1050,16 @@ def main():
     #     output_dir=os.path.join(args.output_path, "evaluation_results"),
     #     name="test_categories_ViT_v2"
     # )
+    
+    evaluate_model(
+        model=models[0][0],
+        datamodule=dataModule,
+        device=device,
+        checkpoint_path='/app/Data/Models/ViT1D_V1/Epoch[52]_Loss[0.0935].pth',
+        training_mode=TRAINING_MODE.CATEGORIES,
+        output_dir=os.path.join(args.output_path, "evaluation_results"),
+        name="test_categories_ViT_V1"
+    )
     
    
    

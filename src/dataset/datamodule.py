@@ -7,7 +7,7 @@ import os
 
 from tqdm import tqdm
 
-from dataset.dataset import DatasetChannels, MITBIHDataset, DatasetMode, DatasetDataMode
+from dataset.dataset import BeatType, DatasetChannels, MITBIHDataset, DatasetMode, DatasetDataMode
 from torch.utils.data import DataLoader
 
 
@@ -63,7 +63,7 @@ class Mitbih_datamodule(pl.LightningDataModule):
         window_imgs = []
 
         for i in tqdm(range(len(dataset)), desc=f"Plotting windows"):
-            img = self.print_window(save_path="", dataset=dataset, index=i, show_plot= False, getFile=True)
+            img = self.print_window(dir_save_path="", dataset=dataset, index=i, show_plot= False, getFile=True)
             if img is not None:
                 window_imgs.append(img.convert("RGB"))
 
@@ -88,27 +88,53 @@ class Mitbih_datamodule(pl.LightningDataModule):
         
     
     
-    def print_window(self, save_path: str, dataset: MITBIHDataset, index: int, show_plot: bool = False, getFile: bool = False) -> Image.Image | None:
+    def print_window(self, dir_save_path: str, dataset: MITBIHDataset, index: int | str, show_plot: bool = False, getFile: bool = False) -> Image.Image | None:
         assert isinstance(dataset, MITBIHDataset)
+        
         #assert os.path.exists(save_path)
         
-        window_data = dataset.get(index)
+        window_data: dict = {}
         
-        if self._datasetDataMode == DatasetDataMode.BEAT_CLASSIFICATION:
+        if isinstance(index, str):
+            labl = BeatType.tokenize(index)
+            
+            if labl is None:
+                print(f"Etichetta {index} non valida.")
+                return None
+            
+            for i in range(len(dataset)):
+                window_data = dataset.get(i)
+                signal = window_data['signal_fragment']
+                label = window_data['beatType']
+                
+                if label == labl:
+                    break
+            else:
+                print(f"Etichetta {index} non trovata nel dataset.")
+                return None
+        
+        else:
+            window_data = dataset.get(index)
+            
             signal = window_data['signal_fragment']
             label = window_data['beatType']
-            label_str = f"Beat Type: {label}"
-        
+            
+        label_str = f"Beat Type: {label}"
         time = torch.arange(signal.shape[1]) / self._sample_rate
         
-        plt.figure(figsize=(12, 6))
+        plt.figure(figsize=(8, 6))
         plt.title(label_str)
         plt.plot(time.numpy(), signal[0].numpy())
         plt.plot(time.numpy(), signal[1].numpy())
         plt.grid(True)
+        plt.xlabel('Time (s)')
+        plt.ylabel('Amplitude')
+        # plt.xlim(0, signal.shape[1] / self._sample_rate)
+        # plt.ylim(0, 1)
+        plt.legend(['MLII', 'V1'])
         plt.tight_layout()
         
-        if save_path:
+        if dir_save_path:
             if getFile:
                 buf = io.BytesIO()
                 plt.savefig(buf, format='png')
@@ -118,9 +144,9 @@ class Mitbih_datamodule(pl.LightningDataModule):
                 return img
             else:
                 # Assicurati che la directory esista
-                os.makedirs(os.path.dirname(save_path), exist_ok=True)
-                plt.savefig(save_path)
-                print(f"Plot salvato in: {save_path}")
+                os.makedirs(os.path.dirname(dir_save_path), exist_ok=True)
+                plt.savefig(dir_save_path)
+                print(f"Plot salvato in: {dir_save_path}")
 
         if show_plot:
             plt.show()
