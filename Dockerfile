@@ -53,8 +53,10 @@ WORKDIR /app
 
 #Copia i file dei requisiti e installa i pacchetti Python
 COPY requirements.txt .
+
+RUN apt-get update && apt-get install -y python3-pip
 RUN pip install --upgrade pip \
-    && pip install -r requirements.txt
+    && pip install --no-cache-dir -r requirements.txt
 
 # Copia il codice dell'app
 #COPY . .
