@@ -947,7 +947,7 @@ def predict_and_plot_signal(model: nn.Module, device: torch.device, signal: torc
     else:
         predicted_label = "Sconosciuto"
 
-    APP_LOGGER.info(f"Segnale processato. Predizione: {predicted_label} (Probabilità: {confidence:.2f}%)")
+    APP_LOGGER.info(f"Segnale processato. Predizione: {predicted_label} (Probabilità: {confidence:.2f})")
 
     # Visualizzazione del segnale
     plt.figure(figsize=(12, 6))
@@ -957,7 +957,7 @@ def predict_and_plot_signal(model: nn.Module, device: torch.device, signal: torc
         plt.plot(signal[0, i, :].cpu().numpy(), label=f'Canale {i+1}')
     
     # Aggiorna il titolo per includere la classe corretta
-    plt.title(f"{title}\nClasse Reale: {true_label} | Predizione: {predicted_label} (Confidenza: {confidence:.2f}%)")
+    plt.title(f"{title}\nClasse Reale: {true_label} | Predizione: {predicted_label} (Probabilità: {confidence:.2f})")
     plt.xlabel("Campioni")
     plt.ylabel("Ampiezza")
     plt.grid(True)
