@@ -503,3 +503,13 @@ Epoch, lr, Train_Loss, Val_Loss, Class_Accuracy, Class_F1_Macro, Class_Precision
 Epoch, lr, Train_Loss, Val_Loss, Class_Accuracy, Class_F1_Macro, Class_Precision_Macro, Class_Recall_Macro, Category_Accuracy, Category_F1_Macro, Category_Precision_Macro, Category_Recall_Macro
 1, 0.000200, 1.374257, 1.228525, -, -, -, -, 0.882249, 0.234360, 0.220562, 0.234360
 2, 0.000200, 1.366205, 1.272797, -, -, -, -, 0.882249, 0.234360, 0.220562, 0.234360
+
+******************************************************************************************************************
+*                                        RESNET1D_18_CATEGORIES TRAINING                                        *
+******************************************************************************************************************
+Epoch, lr, Train_Loss, Val_Loss, Class_Accuracy, Class_F1_Macro, Class_Precision_Macro, Class_Recall_Macro, Category_Accuracy, Category_F1_Macro, Category_Precision_Macro, Category_Recall_Macro
+
+******************************************************************************************************************
+*                                        RESNET1D_18_CATEGORIES TRAINING                                        *
+******************************************************************************************************************
+Epoch, lr, Train_Loss, Val_Loss, Class_Accuracy, Class_F1_Macro, Class_Precision_Macro, Class_Recall_Macro, Category_Accuracy, Category_F1_Macro, Category_Precision_Macro, Category_Recall_Macro

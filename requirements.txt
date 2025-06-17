@@ -6,7 +6,7 @@ pandas==2.2.3
 pillow==11.0.0
 #psycopg2==2.9.9
 python-dotenv==1.0.1
-scikit-learn==1.5.1
+scikit-learn
 scipy==1.13.1
 imbalanced-learn
 seaborn==0.13.2
@@ -29,6 +29,7 @@ pytorch-lightning==2.5.1.post0
 lightning==2.5.1.post0
 lightning-utilities==0.14.3
 
+jupyter
 tensorboard==2.19.0
 colorama==0.4.6
 tqdm==4.67.1

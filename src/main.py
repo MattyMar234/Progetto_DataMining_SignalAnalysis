@@ -777,140 +777,51 @@ def main():
 
     parser = argparse.ArgumentParser(description="Script per configurare e addestrare un modello Transformer sui dati MIT-BIH.")
     
-    # Parametri per la struttura del modello Transformer
-   
-
-    # parser.add_argument("--num_layers", type=int, default=NUM_LAYERS, help=f"Numero di strati del Transformer (default: {NUM_LAYERS})")
-    # parser.add_argument("--d_model", type=int, default=D_MODEL, help=f"Dimensione del modello (default: {D_MODEL})")
-    # parser.add_argument("--num_heads", type=int, default=NUM_HEADS, help=f"Numero di teste di attenzione (default: {NUM_HEADS})")
-    # parser.add_argument("--dff", type=int, default=DFF, help=f"Dimensione del feed-forward (default: {DFF})")
-    # parser.add_argument("--dropout_rate", type=float, default=DROPOUT_RATE, help=f"Tasso di dropout (default: {DROPOUT_RATE})")
-    
+ 
     # Percorsi e configurazioni
     parser.add_argument("--dataset_path", type=str, default=DATASET_PATH, help=f"Percorso del dataset (default: {DATASET_PATH})")
     parser.add_argument("--checkpoint_path", type=str, default=None, help="Percorso di un addestramento precedente (default: None)")
     parser.add_argument("--output_path", type=str, default=OUTPUT_PATH, help=f"Percorso di output per i risultati (default: {OUTPUT_PATH})")
     parser.add_argument("--num_epochs", type=int, default=NUM_EPOCHS, help=f"Numero di epoche di training (default: {NUM_EPOCHS})")
-    parser.add_argument("--mode", type=str, choices=["training", "test"], default="training", help="Modalità di esecuzione: 'training' o 'test' (default: 'training')")
     parser.add_argument("--lr", type=float, default=LEARNING_RATE, help=f"Valore iniziale del learning rate (default: {LEARNING_RATE})")
+    parser.add_argument("--batch_size", type=int, default=16, help=f"Dimensione del batch per il training (default: {16})")
+    parser.add_argument("--num_workers", type=int, default=4, help=f"Numero di worker per il DataLoader (default: {4})")
+
+    parser.add_argument("--mode", type=str, choices=["training", "test", "jupyter"], default="jupyter",
+                        help="Modalità di esecuzione: 'training', 'test' o 'jupyter' (default: 'training'). 'jupyter' serve per la configurazione in ambiente notebook.")
+    
+    parser.add_argument("--model_type", type=str, choices=[
+        "ResNet18",
+        "ResNet34",
+        "ResNet50",
+        "ViT_V1",
+        "ViT_V2",
+    ], default="ResNet18", help="Tipo di modello da utilizzare.")
 
     args = parser.parse_args()
     
-
-    
-    
-    # Calcola i parametri del dataset in base alla frequenza di campionamento
     sample_rate = 360
-    #sample_per_window = sample_rate * args.window_size
-    #sample_per_side = sample_rate * args.window_stride
     channels_enum = DatasetChannels.TWO
+    sample_per_window = 280
     
-    sample_per_window = 280 #int(sample_rate*0.6),#args.window_size,
+    
+    # Dizionario per mappare i nomi dei modelli agli oggetti modello e modalità di training
+    model_configs = {
+        "ResNet18": (ResNet1D_18_Categories(in_channels_signal=channels_enum.value, categories_output_dim=BeatType.num_of_category()), TRAINING_MODE.CATEGORIES),
+        "ResNet34": (ResNet1D_34_Categories(in_channels_signal=channels_enum.value, categories_output_dim=BeatType.num_of_category()), TRAINING_MODE.CATEGORIES),
+        "ResNet50": (ResNet1D_50_Categories(in_channels_signal=channels_enum.value, categories_output_dim=BeatType.num_of_category()), TRAINING_MODE.CATEGORIES),
+        "ViT_V1": (ViT1D(signal_length=sample_per_window, patch_size=10, in_channels=channels_enum.value, embed_dim=128, num_layers=4, num_heads=4, mlp_dim=256, num_classes=BeatType.num_of_category(), dropout=0.1), TRAINING_MODE.CATEGORIES),
+        "ViT_V2": (ViT1D_2V_CATEGORIES(signal_length=sample_per_window, in_channels=channels_enum.value,  embed_dim=128, num_layers=4, num_heads=4, mlp_dim=256, num_classes=BeatType.num_of_category(), dropout=0.1), TRAINING_MODE.CATEGORIES),
+    }
+    
+    # Seleziona il modello in base all'argomento --model_type
+    if args.model_type in model_configs:
+        model, training_mode = model_configs[args.model_type]
+    else:
+        APP_LOGGER.error(f"Tipo di modello '{args.model_type}' non riconosciuto.")
+        return
     
     
-    models: List[Tuple[nn.Module, TRAINING_MODE]] = [
-    
-        
-        # (
-        #     ResNet1D_18_Categories(
-        #         in_channels_signal=channels_enum.value,
-        #         categories_output_dim=BeatType.num_of_category()
-        #     ),
-        #     TRAINING_MODE.CATEGORIES
-        # ),
-        # (
-        #     ResNet1D_18_Classes(
-        #         in_channels_signal=channels_enum.value,
-        #         classes_output_dim=BeatType.num_classes()
-        #     ),
-        #     TRAINING_MODE.CLASSES  
-        # ),
-        # (
-        #     ResNet1D_34_Categories(
-        #         in_channels_signal=channels_enum.value,
-        #         categories_output_dim=BeatType.num_of_category()
-        #     ),
-        #     TRAINING_MODE.CATEGORIES
-        # ),
-        # (
-        #     ResNet1D_34_Classes(
-        #         in_channels_signal=channels_enum.value,
-        #         classes_output_dim=BeatType.num_classes()
-        #     ),
-        #     TRAINING_MODE.CLASSES  
-        # ),
-        # (
-        #     ResNet1D_50_Categories(
-        #         in_channels_signal=channels_enum.value,
-        #         categories_output_dim=BeatType.num_of_category()
-        #     ),
-        #     TRAINING_MODE.CATEGORIES
-        # ),
-        # (
-        #     ResNet1D_50_Classes(
-        #         in_channels_signal=channels_enum.value,
-        #         classes_output_dim=BeatType.num_classes()
-        #     ),
-        #     TRAINING_MODE.CLASSES  
-        # ),
-        # (
-        #     ViT1D_2V_CATEGORIES(
-        #         signal_length = sample_per_window,
-        #         in_channels=channels_enum.value,
-        #         embed_dim=128,
-        #         num_layers=4,
-        #         num_heads=4,
-        #         mlp_dim=256,
-        #         num_classes=BeatType.num_of_category(),
-        #         dropout = 0.1
-        #     ),
-        #     TRAINING_MODE.CATEGORIES
-        # ),
-        # (
-        #     ViT1D_2V_CLASSES(
-        #         signal_length = sample_per_window,
-        #         in_channels=channels_enum.value,
-        #         embed_dim=128,
-        #         num_layers=4,
-        #         num_heads=4,
-        #         mlp_dim=256,
-        #         num_classes=BeatType.num_classes(),
-        #         dropout = 0.1
-        #     ),
-        #     TRAINING_MODE.CLASSES
-        # ),
-        
-        
-        (
-            ViT1D(
-                signal_length = sample_per_window,
-                patch_size = 10,
-                in_channels=channels_enum.value,
-                embed_dim=128,
-                num_layers=4,
-                num_heads=4,
-                mlp_dim=128*2,
-                num_classes=BeatType.num_of_category(),
-                dropout = 0.1
-            ),TRAINING_MODE.CATEGORIES
-        )
-        
-        # (
-        #     ViT1D(
-        #         signal_length = sample_per_window,
-        #         patch_size = 10,
-        #         in_channels=channels_enum.value,
-        #         embed_dim=256,
-        #         num_layers=6,
-        #         num_heads=8,
-        #         mlp_dim=256*2,
-        #         num_classes=BeatType.num_of_category(),
-        #         dropout = 0.1
-        #     ),TRAINING_MODE.CATEGORIES
-        # )
-        
-        
-    ]
     
     dataModule = Mitbih_datamodule(
         args.dataset_path, 
@@ -918,8 +829,8 @@ def main():
         datasetChannels=channels_enum,
         sample_rate=sample_rate, 
         sample_per_window=sample_per_window,
-        num_workers=4,
-        batch_size=16#12
+        num_workers=min(args.num_workers, os.cpu_count()),  # Limita a 4 worker al massimo
+        batch_size=args.batch_size,
     )
     
     # dataModule.print_window(
@@ -960,108 +871,48 @@ def main():
     device: torch.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     APP_LOGGER.info(f"Utilizzando dispositivo: {device}")
     
-    # for (model, mode) in models:
-    #     # APP_LOGGER.info("Architettura del Modello:")
-    #     APP_LOGGER.info(f"Training del Modello {model.__class__.__name__} per {mode}")
-        
-    #     training_classification(
-    #         start_lr=args.lr,
-    #         training_mode= mode,
-    #         device = device,
-    #         dataModule = dataModule,
-    #         model = model,
-    #         num_epochs = args.num_epochs,
-    #         training_log_path=os.path.join(setting.LOGS_FOLDER, 'training_logs.txt'),
-    #         checkpoint_dir = os.path.join(setting.OUTPUT_PATH, model.__class__.__name__),
-    #         confusion_matrix_dir=os.path.join(setting.OUTPUT_PATH, model.__class__.__name__)#setting.LOGS_FOLDER
-    #         #checkpoint = "/app/Data/Models/Epoch[1]_Loss[inf].pth"
-        
-    #     )
+    
+    if args.mode == "training":
+        APP_LOGGER.info(f"Avvio del training per il modello {model.__class__.__name__} in modalità {training_mode}.")
+        training_classification(
+            start_lr=args.lr,
+            training_mode=training_mode,
+            device=device,
+            dataModule=dataModule,
+            model=model,
+            num_epochs=args.num_epochs,
+            training_log_path=os.path.join(setting.LOGS_FOLDER, 'training_logs.txt'),
+            checkpoint_dir=os.path.join(setting.OUTPUT_PATH, model.__class__.__name__),
+            confusion_matrix_dir=os.path.join(setting.OUTPUT_PATH, model.__class__.__name__),
+            checkpoint=args.checkpoint_path,
+        )
+    elif args.mode == "test":
+        if not args.checkpoint_path:
+            APP_LOGGER.error("Per la modalità 'test' è necessario specificare un --checkpoint_path.")
+            return
+        APP_LOGGER.info(f"Avvio della valutazione per il modello {model.__class__.__name__} con checkpoint {args.checkpoint_path}.")
+        evaluate_model(
+            model=model,
+            datamodule=dataModule,
+            device=device,
+            checkpoint_path=args.checkpoint_path,
+            training_mode=training_mode,
+            output_dir=os.path.join(args.output_path, "evaluation_results"),
+            name=f"test_{model.__class__.__name__}"
+        )
+    elif args.mode == "jupyter":
+        APP_LOGGER.info("Modalità Jupyter selezionata. Puoi ora utilizzare `dataModule`, `model`, e `device` nel tuo notebook.")
+        # Questa parte è pensata per essere usata interattivamente in un notebook.
+        # Non esegue operazioni di training o test direttamente, ma imposta gli oggetti.
+        # Puoi aggiungere un breakpoint qui o semplicemente eseguire lo script e poi interagire.
+        global global_dataModule, global_model, global_device, global_training_mode
+        global_dataModule = dataModule
+        global_model = model
+        global_device = device
+        global_training_mode = training_mode
+        print("Le variabili 'global_dataModule', 'global_model', 'global_device', 'global_training_mode' sono state caricate per l'uso in Jupyter.")
     
     
-    
-
-    # evaluate_model(
-    #     model=models[0][0],
-    #     datamodule=dataModule,
-    #     device=device,
-    #     checkpoint_path='/app/Data/Models/ResNet1D_18_Categories/Epoch[34]_Loss[0.0896].pth',
-    #     training_mode=TRAINING_MODE.CATEGORIES,
-    #     output_dir=os.path.join(args.output_path, "evaluation_results"),
-    #     name="test_categories_resnet18"
-    # )
-    
-    # evaluate_model(
-    #     model=models[1][0],
-    #     datamodule=dataModule,
-    #     device=device,
-    #     checkpoint_path='/app/Data/Models/ResNet1D_18_Classes/Epoch[24]_Loss[0.1168].pth',
-    #     training_mode=TRAINING_MODE.CLASSES,
-    #     output_dir=os.path.join(args.output_path, "evaluation_results"),
-    #     name="test_classes_resnet18"
-    # )
-    
-    # evaluate_model(
-    #     model=models[2][0],
-    #     datamodule=dataModule,
-    #     device=device,
-    #     checkpoint_path='/app/Data/Models/ResNet1D_34_Categories/Epoch[23]_Loss[0.0856].pth',
-    #     training_mode=TRAINING_MODE.CATEGORIES,
-    #     output_dir=os.path.join(args.output_path, "evaluation_results"),
-    #     name="test_categories_resnet34"
-    # )
-    
-    # # evaluate_model(
-    # #     model=models[3],
-    # #     datamodule=dataModule,
-    # #     device=device,
-    # #     checkpoint_path='/app/Data/Models/ResNet1D_18_Classes/Epoch[24]_Loss[0.1168].pth',
-    # #     training_mode=TRAINING_MODE.CLASSES,
-    # #     output_dir=os.path.join(args.output_path, "evaluation_results"),
-    # #     name="test_classes_resnet18"
-    # # )
-    
-    # evaluate_model(
-    #     model=models[4][0],
-    #     datamodule=dataModule,
-    #     device=device,
-    #     checkpoint_path='/app/Data/Models/ResNet1D_50_Categories/Epoch[28]_Loss[0.0894].pth',
-    #     training_mode=TRAINING_MODE.CATEGORIES,
-    #     output_dir=os.path.join(args.output_path, "evaluation_results"),
-    #     name="test_categories_resnet50"
-    # )
-    
-    # # evaluate_model(
-    # #     model=models[5],
-    # #     datamodule=dataModule,
-    # #     device=device,
-    # #     checkpoint_path='/app/Data/Models/ResNet1D_18_Classes/Epoch[24]_Loss[0.1168].pth',
-    # #     training_mode=TRAINING_MODE.CLASSES,
-    # #     output_dir=os.path.join(args.output_path, "evaluation_results"),
-    # #     name="test_classes_resnet18"
-    # # )
-    
-    # evaluate_model(
-    #     model=models[6][0],
-    #     datamodule=dataModule,
-    #     device=device,
-    #     checkpoint_path='/app/Data/Models/ViT1D_2V_CATEGORIES/Epoch[28]_Loss[0.0833].pth',
-    #     training_mode=TRAINING_MODE.CATEGORIES,
-    #     output_dir=os.path.join(args.output_path, "evaluation_results"),
-    #     name="test_categories_ViT_v2"
-    # )
-    
-    evaluate_model(
-        model=models[0][0],
-        datamodule=dataModule,
-        device=device,
-        checkpoint_path='/app/Data/Models/ViT1D_V1/Epoch[52]_Loss[0.0935].pth',
-        training_mode=TRAINING_MODE.CATEGORIES,
-        output_dir=os.path.join(args.output_path, "evaluation_results"),
-        name="test_categories_ViT_V1"
-    )
-    
-   
    
 
 if __name__ == "__main__":
