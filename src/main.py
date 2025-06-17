@@ -905,14 +905,65 @@ def main():
         # Questa parte è pensata per essere usata interattivamente in un notebook.
         # Non esegue operazioni di training o test direttamente, ma imposta gli oggetti.
         # Puoi aggiungere un breakpoint qui o semplicemente eseguire lo script e poi interagire.
-        global global_dataModule, global_model, global_device, global_training_mode
+        global global_dataModule, global_device, global_training_mode, global_models_dict
         global_dataModule = dataModule
-        global_model = model
+        global_models_dict = model_configs
         global_device = device
         global_training_mode = training_mode
         print("Le variabili 'global_dataModule', 'global_model', 'global_device', 'global_training_mode' sono state caricate per l'uso in Jupyter.")
     
+def predict_and_plot_signal(model: nn.Module, device: torch.device, signal: torch.Tensor, training_mode: TRAINING_MODE, title: str = "ECG Signal Prediction", true_label: str = "N/A"):
+    """
+    Carica un segnale, lo processa con il modello e visualizza il segnale con il risultato della predizione.
+
+    Args:
+        model (nn.Module): Il modello di rete neurale addestrato.
+        device (torch.device): Il dispositivo su cui eseguire il modello (CPU/GPU).
+        signal (torch.Tensor): Il segnale di input da processare. Assumiamo che sia già pre-processato
+                               e abbia la forma (in_channels, sample_per_window).
+        training_mode (TRAINING_MODE): La modalità di training del modello (CLASSES o CATEGORIES).
+        title (str): Titolo del plot.
+        true_label (str): L'etichetta di verità (ground truth) del segnale.
+    """
+    model.eval()  # Imposta il modello in modalità valutazione
+    model.to(device)
+
+    # Assicurati che il segnale abbia la dimensione batch (batch_size, in_channels, sample_per_window)
+    if signal.dim() == 2:
+        signal = signal.unsqueeze(0)  # Aggiunge una dimensione batch all'inizio
     
+    signal = signal.to(device)
+
+    with torch.no_grad():
+        outputs = model(signal)
+        probabilities = torch.softmax(outputs, dim=1) # Ottieni le probabilità
+        predicted_index = torch.argmax(probabilities, dim=1).item()
+        confidence = probabilities[0, predicted_index].item()# * 100 # Confidenza in percentuale
+
+    if training_mode == TRAINING_MODE.CLASSES:
+        predicted_label = BeatType.mapBeatClass_to_Label(predicted_index)
+    elif training_mode == TRAINING_MODE.CATEGORIES:
+        predicted_label = BeatType.mapBeatCategory_to_Label(predicted_index)
+    else:
+        predicted_label = "Sconosciuto"
+
+    APP_LOGGER.info(f"Segnale processato. Predizione: {predicted_label} (Probabilità: {confidence:.2f}%)")
+
+    # Visualizzazione del segnale
+    plt.figure(figsize=(12, 6))
+    
+    # Se ci sono più canali, plottali tutti
+    for i in range(signal.shape[1]): # signal.shape[1] è il numero di canali
+        plt.plot(signal[0, i, :].cpu().numpy(), label=f'Canale {i+1}')
+    
+    # Aggiorna il titolo per includere la classe corretta
+    plt.title(f"{title}\nClasse Reale: {true_label} | Predizione: {predicted_label} (Confidenza: {confidence:.2f}%)")
+    plt.xlabel("Campioni")
+    plt.ylabel("Ampiezza")
+    plt.grid(True)
+    plt.legend()
+    plt.tight_layout()
+    plt.show()
    
 
 if __name__ == "__main__":
