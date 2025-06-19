@@ -1,4 +1,5 @@
 from collections import Counter
+import hashlib
 import random
 from sklearn.model_selection import train_test_split
 import torch
@@ -972,8 +973,12 @@ class MITBIHDataset(Dataset):
             ignored_y = []
             classNumber:dict = {}
             
+            hash_dict: dict = {}
+            
 
             for beat_type, signals in dataDict.items():
+                
+                
                 
                 if len(signals) < threshold:
                     APP_LOGGER.warning(f"Tipo di battito {beat_type.value[0]} ha meno di {threshold} segnali, ignorato per la SMOTE")
@@ -983,6 +988,8 @@ class MITBIHDataset(Dataset):
                 else:
                     classNumber[beat_type.value[1]] = len(signals)
                     for signal in signals:
+                        tensor_hash = hashlib.sha256(signal.numpy().tobytes()).hexdigest()
+                        hash_dict[tensor_hash] = True
                         X.append(signal.reshape(-1).numpy())  
                         y.append(beat_type.value[1])          
                   
@@ -1010,9 +1017,12 @@ class MITBIHDataset(Dataset):
             X_res = X_res.reshape(-1, 2, 280)  # ripristino della forma originale
             
             
+            
             for xi, yi in zip(X_res, y_res):
                 beat_type = BeatType.tokenize(int(yi))
                 tensor_signal = torch.tensor(xi).view(self._channels.value, 280)
+                
+                tensor_hash = hashlib.sha256(tensor_signal.numpy().tobytes()).hexdigest()
                
                 if len(tensor_signal.shape) == 1:
                     tensor_signal = tensor_signal.unsqueeze(dim=0)
@@ -1022,6 +1032,7 @@ class MITBIHDataset(Dataset):
                     'beatType': beat_type,
                     'class' : torch.tensor([yi], dtype=torch.long),
                     'category': torch.tensor([BeatType.getBeatCategory(beat_type)], dtype=torch.long),
+                    'syntetic': False if hash_dict.get(tensor_hash) != None and hash_dict[tensor_hash] == True else True,
                     #'record_name': record_name,
                 }
                 window_counter += 1
@@ -1033,6 +1044,7 @@ class MITBIHDataset(Dataset):
                     'beatType': beat_type,
                     'class' : torch.tensor([BeatType.getBeatClass(beat_type)], dtype=torch.long),
                     'category': torch.tensor([BeatType.getBeatCategory(beat_type)], dtype=torch.long),
+                    'syntetic': False,
                     #'record_name': record_name,
                 }
                 
@@ -1056,6 +1068,7 @@ class MITBIHDataset(Dataset):
                         'beatType': beat_type,
                         'class': torch.tensor([BeatType.getBeatClass(beat_type)], dtype=torch.long),
                         'category': torch.tensor([BeatType.getBeatCategory(beat_type)], dtype=torch.long),
+                        'syntetic': False,
                         # 'record_name': record_name,
                     })
 
