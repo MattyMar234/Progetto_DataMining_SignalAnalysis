@@ -21,6 +21,7 @@ torchmetrics==1.7.1
 torchvision==0.22.0
 
 wfdb
+imbalanced-learn
 sentencepiece
 transformers  #richiede sentencepiece
 datasets

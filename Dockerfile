@@ -16,18 +16,20 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libsm6 \
     libxrender1 \
     libxext6 \
-    openssh-server \
-    # Dipendenze aggiuntive per pacchetti scientifici/ML come torch, scipy, matplotlib, rasterio, ecc.
-    libjpeg-dev \
-    zlib1g-dev \
-    libpng-dev \
-    libtiff-dev \
-    libfreetype6-dev \
-    libatlas-base-dev \
-    libopenblas-dev \
-    gfortran \
-    pkg-config \
-    && rm -rf /var/lib/apt/lists/*
+    openssh-server 
+
+# Dipendenze aggiuntive per pacchetti scientifici/ML come torch, scipy, matplotlib, rasterio, ecc.
+RUN apt-get install -y libjpeg-dev
+RUN apt-get install -y zlib1g-dev
+RUN apt-get install -y libpng-dev
+RUN apt-get install -y libtiff-dev
+RUN apt-get install -y libfreetype6-dev
+#RUN apt-get install -y libatlas-base-dev
+RUN apt-get install -y libopenblas-dev
+RUN apt-get install -y gfortran
+RUN apt-get install -y pkg-config
+RUN rm -rf /var/lib/apt/lists/*
+
 
 RUN apt-get update && apt-get install -y \
     python3-tk \
@@ -37,7 +39,7 @@ RUN apt-get update && apt-get install -y \
 
 
 # Configura il server SSH con PASSWORD
-RUN mkdir /var/run/sshd
+RUN mkdir -p /var/run/sshd
 RUN echo 'root:1234' | chpasswd
 RUN sed -i 's/#PermitRootLogin prohibit-password/PermitRootLogin yes/' /etc/ssh/sshd_config
 RUN sed -i 's/#PasswordAuthentication yes/PasswordAuthentication yes/' /etc/ssh/sshd_config
@@ -47,6 +49,7 @@ RUN sshd -t
 
 # Esponi la porta SSH
 EXPOSE 22
+EXPOSE 12355
 
 # Crea e imposta la directory di lavoro
 WORKDIR /app

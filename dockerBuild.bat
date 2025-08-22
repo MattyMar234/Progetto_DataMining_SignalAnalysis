@@ -36,12 +36,14 @@ REM Avvia il container con GPU, volume, supporto GUI e porta SSH
 docker run -it ^
   --gpus all ^
   --name %CONTAINER_NAME% ^
+  --shm-size=1g ^
   -e DISPLAY=%DISPLAY% ^
   -e XDG_RUNTIME_DIR=/tmp/runtime ^
   -e SDL_AUDIODRIVER=dummy ^
   -v /tmp/.X11-unix:/tmp/.X11-unix ^
   -v "%cd%":/app ^
   -p 8892:22 ^
+  -p 12355:12355 ^
   -w /app ^
   %IMAGE_NAME%
 

@@ -14,11 +14,10 @@ from PIL import Image
 from tqdm import tqdm
 import matplotlib.pyplot as plt
 from imblearn.over_sampling import SMOTE
-
-
 from sklearn.utils.class_weight import compute_class_weight
 
 from setting import APP_LOGGER
+from functools import lru_cache
 
 # Definizione delle modalità del dataset
 class DatasetMode(Enum):
@@ -34,186 +33,30 @@ class DatasetChannels(Enum):
     ONE = 1
     TWO = 2
 
-#https://archive.physionet.org/physiobank/database/html/mitdbdir/intro.htm#leads
-class BeatType(Enum):
-    
-    UNKNOWN_BEAT_Q = "QB", 0, "Unknown beat"
-    #LEFT_OR_RIGHT_BUNDLE_BRANCH_BLOCK_BEAT = "B",-1, "?"
-    
-    
-    #Normal e battiti di conduzione normale
-    NORMAL_BEAT = "N",1, "Normal beat"
-    LEFT_BUNDLE_BRANCH_BLOCK_BEAT = "L",2, "Left bundle branch block beat"
-    RIGHT_BUNDLE_BRANCH_BLOCK_BEAT = "R",3, "Right bundle branch block beat"
-    
-    NODAL_JUNCTIONAL_ESCAPE_BEAT = "j",4, "Nodal (junctional) escape beat"
-    ATRIAL_ESCAPE_BEAT = "e",5, "Atrial escape beat"
-    
-    #Battiti sopra-ventricolari (Supraventricular ectopic)
-    ATRIAL_PREMATURE_BEAT = "A",6, "Atrial premature beat"
-    ABERRATED_ATRIAL_PREMATURE_BEAT = "a",7, "Aberrated atrial premature beat"
-    NODAL_JUNCTIONAL_PREMATURE_BEAT = "J",8, "Nodal (junctional) premature beat"
-    SUPRAVENTRICULAR_PREMATURE_BEAT = "S",9, "Supraventricular premature beat"
-    
-    #Battiti ventricolari (Ventricular ectopic)
-    PREMATURE_VENTRICULAR_CONTRACTION = "V", 10, "Premature ventricular contraction"
-    VENTRICULAR_ESCAPE_BEAT = "E",11, "Ventricular escape beat"
-    
-    
-    #Fusion beats
-    FUSION_OF_VENTRICULAR_AND_NORMAL_BEAT = "F", 12, "Fusion of ventricular and normal beat"
-    FUSION_OF_PACED_AND_NORMAL_BEAT = "f", 13, "Fusion of paced and normal beat"
-   
-    #others
-    VENTRICULAR_FLUTTER_WAVE = "!", 14, "Ventricular flutter wave"
-    PACED_BEAT_SLASH = "/", 15, "Paced beat"
-    PACED_BEAT_P = "P", 15, "Paced beat"
-    ISOLATED_QRS_LIKE_ARTIFACT = "|", 16, "Isolated QRS-like artifact"
-    
-  
-    #ANNOTATION
-    CHANGE_IN_SIGNAL_QUALITY = "~", -1, "?"
-    NOISE = "X x", -1, "?"
-    START_NOISE = "[", -1, "?"
-    END_NOISE = "]", -1, "?"
-    START_SEG_PLUS = "+", -1, "?"
-    COMMENT = "\"", -1, "?"
-    
 
+class ArrhythmiaType(Enum):
+    NOR = (0, [100, 105, 215], "NOR")
+    LBB = (1, [109, 111, 214], "LBB")
+    RBB = (2, [118, 124, 212], "RBB")
+    PVC = (3, [106, 223], "PVC")
+    PAC = (4, [207, 209, 232], "PAC")
     
-    def __str__(self):
-        return self.value[0]
+    def __str__(self) -> str:
+        return self.value[2]
     
-
+    @lru_cache(maxsize=1)
     @classmethod
-    def toList(cls):
+    def toList(cls) -> List[Tuple[int, List[int], str]]:
         return list(map(lambda c: c.value, cls))
-    
+  
+    @lru_cache(maxsize=5)
     @classmethod
-    def tokenize(cls, type: str | int) -> 'BeatType':
-       
-        # Mappa il carattere o l'intero in un oggetto SampleType usando i valori degli enum
-        if isinstance(type, int):
-            for member in cls:
-                if member.value[1] == type:
-                    return member
-            raise ValueError(f"Tipo di battito sconosciuto: {type}. Non può essere convertito in SampleType.")
-        
-        elif isinstance(type, str):
-            # if len(type) != 1:
-            #     raise ValueError(f"Tipo di battito non valido: {type}")
-        
-            type_char = type.strip()[0]
-            for member in cls:
-                if type_char in member.value[0]:
-                    return member
-            raise ValueError(f"Tipo di battito sconosciuto: {type_char}. Non può essere convertito in SampleType.")
-        else:
-            raise ValueError(f"Tipo di battito non valido: {type}. Tipo del dato: {type(type)}. Deve essere un carattere o un intero.")
-
-    @classmethod  
-    def isBeat(cls, annotation: 'BeatType') -> bool:
-        return annotation in {
-            cls.NORMAL_BEAT, cls.LEFT_BUNDLE_BRANCH_BLOCK_BEAT, cls.RIGHT_BUNDLE_BRANCH_BLOCK_BEAT,
-            #cls.LEFT_OR_RIGHT_BUNDLE_BRANCH_BLOCK_BEAT, 
-            cls.ISOLATED_QRS_LIKE_ARTIFACT,
-            cls.ATRIAL_PREMATURE_BEAT, cls.ABERRATED_ATRIAL_PREMATURE_BEAT,
-            cls.NODAL_JUNCTIONAL_PREMATURE_BEAT, cls.NODAL_JUNCTIONAL_ESCAPE_BEAT,
-            cls.SUPRAVENTRICULAR_PREMATURE_BEAT, cls.PREMATURE_VENTRICULAR_CONTRACTION,
-            cls.VENTRICULAR_ESCAPE_BEAT, cls.ATRIAL_ESCAPE_BEAT,
-            cls.FUSION_OF_VENTRICULAR_AND_NORMAL_BEAT, cls.FUSION_OF_PACED_AND_NORMAL_BEAT,
-            cls.VENTRICULAR_FLUTTER_WAVE, cls.UNKNOWN_BEAT_Q, cls.PACED_BEAT_SLASH
-        }
-    
-    @classmethod
-    def isTag(cls, annotation: 'BeatType') -> bool:
-        return annotation in {
-            cls.CHANGE_IN_SIGNAL_QUALITY, cls.NOISE, cls.START_NOISE,
-            cls.END_NOISE, cls.START_SEG_PLUS, cls.COMMENT
-        }
-        
-    @classmethod
-    def getBeatCategory(cls, beat: 'BeatType') -> int:
-        match beat:
-            
-            #N
-            case cls.NORMAL_BEAT | \
-                 cls.LEFT_BUNDLE_BRANCH_BLOCK_BEAT | \
-                 cls.RIGHT_BUNDLE_BRANCH_BLOCK_BEAT | \
-                 cls.ATRIAL_ESCAPE_BEAT | \
-                 cls.NODAL_JUNCTIONAL_ESCAPE_BEAT:
-                return 0
-            
-            #SVEB
-            case cls.ATRIAL_PREMATURE_BEAT | \
-                 cls.ABERRATED_ATRIAL_PREMATURE_BEAT | \
-                 cls.NODAL_JUNCTIONAL_PREMATURE_BEAT | \
-                 cls.SUPRAVENTRICULAR_PREMATURE_BEAT:
-                return 1
-            
-            #VEB
-            case cls.PREMATURE_VENTRICULAR_CONTRACTION | \
-                 cls.VENTRICULAR_ESCAPE_BEAT:
-                return 2
-            
-            #F
-            case cls.FUSION_OF_VENTRICULAR_AND_NORMAL_BEAT:
-                return 3
-            
-            #Q
-            case cls.UNKNOWN_BEAT_Q | \
-                 cls.FUSION_OF_PACED_AND_NORMAL_BEAT | \
-                 cls.ISOLATED_QRS_LIKE_ARTIFACT | \
-                 cls.PACED_BEAT_SLASH | \
-                 cls.VENTRICULAR_FLUTTER_WAVE: 
-                return 4
-            case _:
-                raise ValueError(f"Il beat {beat} non ha una mappatura numerica definita.")
-
-    @classmethod
-    def mapBeatClass_to_Label(cls, idx: int) -> str:
-        if idx <= 0 or idx >= cls.num_classes(): return "Unknow"
-        
-        for enm in cls.toList():
-            if enm[1]==idx: return f"{enm[2]} ({enm[0]})"
-        else:
-            return "Unknow"
-        
-    @classmethod
-    def mapBeatCategory_to_Label(cls, idx: int) -> str:
-        match idx:
-            case 0: return "Normal"
-            case 1: return  "SVEB"
-            case 2: return  "VEB"
-            case 3: return  "Fusion"
-            case _: return  "Unclassifiable"
-        
-        
-    @classmethod
-    def getBeatClass(cls, beat: 'BeatType') -> int:
-        return beat.value[1]
-    
-    @classmethod
-    def num_classes(cls) -> int:
-        """Restituisce il numero di classi per la classificazione (escluse le annotazioni e i battiti ignorati)."""
-        return 17
-    
-    @classmethod
-    def num_of_category(cls) -> int:
-        """Restituisce il numero di classi per la classificazione (escluse le annotazioni e i battiti ignorati)."""
-        return 5
-
-    @classmethod
-    def get_ignore_class_value(cls) -> int:
-        """Restituisce l'etichetta numerica che dovrebbe essere ignorata (es. UNKNOWN)"""
-        return 0
-    
-    @classmethod
-    def get_ignore_category_value(cls) -> int:
-        """Restituisce l'etichetta numerica che dovrebbe essere ignorata (es. UNKNOWN)"""
-        return 4
-      
-    
+    def toEnum(cls, value: int) -> 'ArrhythmiaType':
+        for member in cls:
+            if member.value[0] == value:
+                return member
+        raise ValueError(f"{value} is not a valid {cls.__name__}")
+  
   
 class MITBIHDataset(Dataset):
     """
@@ -240,19 +83,19 @@ class MITBIHDataset(Dataset):
     _ALL_RECORDS: Final[list] = _RECORDS_MLII_V1 #+ _RECORDS_MLII_V2 + _RECORDS_MLII_V4 + _RECORDS_MLII_V5# + _RECORDS_V5_V2
     
     _FILES_CHEKED: bool = False
-    _DATASET_PATH: None | str = None
+    _DATASET_PATH: str = ""
     _RISOLUZIONE_ADC: int = 11
     _MIN_VALUE: int = 0
     _MAX_VALUE: int = 2**_RISOLUZIONE_ADC - 1
     _MAX_SAMPLE_NUM: int = 650000
-    _MAX_BPM=260
-    _MIN_BPM=0
+
     
     __SAMPLE_RATE: int | None = None
     __RANDOM_SEED: int | None = None
     __USE_SMOTE: bool = True
+    
     # Dizionario per memorizzare il segnale di ogni record
-    _ALL_SIGNALS_DICT: Dict[str, torch.Tensor] = {}
+    _ALL_SIGNALS_DICT: Dict[int, torch.Tensor] = {}
     _WINDOWS: Dict[int, Dict[str, Any]] = {}
     
     # Dizionario per memorizzare le annotazioni di ogni segnale
@@ -262,14 +105,15 @@ class MITBIHDataset(Dataset):
 
     @classmethod
     def resetDataset(cls) -> None:
-        cls._DATASET_PATH = None
+        cls._DATASET_PATH = ""
         cls._FILES_CHEKED = False
+        cls.__USE_SMOTE = False
         cls._ALL_SIGNALS_DICT.clear()
         cls._ALL_SIGNALS_BEAT_ANNOTATIONS_DICT.clear()
         cls._ALL_SIGNALS_TAG_ANNOTATIONS_DICT.clear()
 
     @classmethod
-    def initDataset(cls, path: str, sample_rate: int = 360, *, fill_and_concat_missing_channels: bool = False, random_seed: int = 42):
+    def initDataset(cls, path: str,  *, random_seed: int = 42, use_smote:bool = False):
         """
         Imposta il percorso del dataset e carica staticamente tutti i dati.
         Questo metodo dovrebbe essere chiamato una volta all'inizio del programma.
@@ -278,25 +122,26 @@ class MITBIHDataset(Dataset):
             APP_LOGGER.info(f"Il percorso del dataset è già impostato su: {cls._DATASET_PATH}")
             return
         
-        cls.__SAMPLE_RATE = sample_rate
         cls.__RANDOM_SEED = random_seed
         cls._DATASET_PATH = path
+        cls.__USE_SMOTE = use_smote
         
         #========================================================================#
         # VERIFICO I FILES
         #========================================================================#
+        APP_LOGGER.info("Verifica esitenza directory dataset...")
+        
         if not os.path.isdir(path):
             raise FileNotFoundError(f"La directory specificata non esiste: {path}")
-        APP_LOGGER.info(f"Percorso del dataset impostato su: {cls._DATASET_PATH}")
+        APP_LOGGER.info(f"Directory trovata: {path}")
         
-        APP_LOGGER.info("Verifica dei files")
+        APP_LOGGER.info("Verifica dei files...")
         for record_name in cls._ALL_RECORDS:
             csv_filepath = os.path.join(MITBIHDataset._DATASET_PATH, f"{record_name}.csv")
             txt_filepath = os.path.join(MITBIHDataset._DATASET_PATH, f"{record_name}annotations.txt")
             assert os.path.exists(csv_filepath), f"file {csv_filepath} non trovato" 
             assert os.path.exists(txt_filepath), f"file {txt_filepath} non trovato" 
-        
-        APP_LOGGER.info("Completato")
+        APP_LOGGER.info("Tutti i file trovati")
         
         cls._FILES_CHEKED = True
         
@@ -304,13 +149,15 @@ class MITBIHDataset(Dataset):
         # CARICO I DATI
         #========================================================================#
         APP_LOGGER.info("caricamneto dei dati ")
-        cls.__load_signals(fill_and_concat_missing_channels=fill_and_concat_missing_channels)
+        if not cls.__load_signals():
+            raise RuntimeError("Errore durante il caricamento dei segnali")
+            
         APP_LOGGER.info("Completato")
         
         #========================================================================#
         # NORMALIZZAZIONE DEI DATI
         #========================================================================#
-        APP_LOGGER.info("Normalizzazione dei dati")
+        #APP_LOGGER.info("Normalizzazione dei dati")
         # min_list = []
         # max_list = []
         
@@ -326,104 +173,90 @@ class MITBIHDataset(Dataset):
         
         
         #normalizzo tutti i segnali
-        for record_name in cls._ALL_RECORDS:
-            signal = cls._ALL_SIGNALS_DICT[record_name]
-            signal = (signal - MITBIHDataset._MIN_VALUE) / (MITBIHDataset._MAX_VALUE - MITBIHDataset._MIN_VALUE) 
-            cls._ALL_SIGNALS_DICT[record_name] = signal
+        # for record_name in cls._ALL_RECORDS:
+        #     signal = cls._ALL_SIGNALS_DICT[record_name]
+        #     signal = (signal - MITBIHDataset._MIN_VALUE) / (MITBIHDataset._MAX_VALUE - MITBIHDataset._MIN_VALUE) 
+        #     cls._ALL_SIGNALS_DICT[record_name] = signal
         
-        APP_LOGGER.info("Completata")
-        APP_LOGGER.info(f"Valore massimo trovato: {cls._MAX_VALUE}")
-        APP_LOGGER.info(f"Valore minimo trovato: {cls._MIN_VALUE}")
+        # APP_LOGGER.info("Completata")
+        # APP_LOGGER.info(f"Valore massimo trovato: {cls._MAX_VALUE}")
+        # APP_LOGGER.info(f"Valore minimo trovato: {cls._MIN_VALUE}")
+        
+        #========================================================================#
+        # Finestratura dei dati
+        #========================================================================#
+        APP_LOGGER.info("Realizzazione delle finestre")
+        if not cls.__makeWindows():
+            raise RuntimeError("Errore durante la realizzazione delle finestre")
+        APP_LOGGER.info("Completato")
         
     @classmethod
-    def __load_signals(cls, fill_and_concat_missing_channels: bool = False) -> None:
-        
-        colums_list: list = [
-            MITBIHDataset._MLII_COL,
-            MITBIHDataset._V1_COL,
-            MITBIHDataset._V2_COL,
-            #MITBIHDataset._V3_COL, non presente nel dataset
-            MITBIHDataset._V4_COL,
-            MITBIHDataset._V5_COL
-        ]
-        
-        progress_bar = tqdm(total=len(cls._ALL_RECORDS), desc="Caricamento Records")
+    def __load_signals(cls) -> bool:
+    
+        progress_bar = tqdm(total=len(ArrhythmiaType.toList()), desc="Caricamento Records")
         
         try:    
-            for record_name in cls._ALL_RECORDS:
-                progress_bar.set_description(f"record {record_name}")
+            for (_, records, label) in ArrhythmiaType.toList():
+                for record_name in records:
+                    progress_bar.set_description(f"{label} - record {record_name}")
                 
-                #progress_bar.display(record_name)
-                csv_filepath = os.path.join(MITBIHDataset._DATASET_PATH, f"{record_name}.csv")
-                txt_filepath = os.path.join(MITBIHDataset._DATASET_PATH, f"{record_name}annotations.txt")
-                signal: torch.Tensor | None = None
+                    
+                    csv_filepath = os.path.join(MITBIHDataset._DATASET_PATH, f"{record_name}.csv")
+                    #txt_filepath = os.path.join(MITBIHDataset._DATASET_PATH, f"{record_name}annotations.txt")
+            
+                    #========================================================================#
+                    # ESTRAGGO IL SEGNALE
+                    #========================================================================#
+                    # --- Leggi il segnale dal file CSV ---
+                    df = pd.read_csv(csv_filepath)
+                    
+                    for idx, col in enumerate(df.columns):
+                        df = df.rename(columns={df.columns[idx]: df.columns[idx].replace('\'', '')})
+
+                    # -- leggo la colonna MLII --
+                    signal: torch.Tensor = torch.from_numpy(df[MITBIHDataset._MLII_COL].values).unsqueeze(0)
+                    
+                    #-- normalizzo il segnale --
+                    signal = (signal - MITBIHDataset._MIN_VALUE) / (MITBIHDataset._MAX_VALUE - MITBIHDataset._MIN_VALUE) 
         
-                
-                #========================================================================#
-                # ESTRAGGO IL SEGNALE
-                #========================================================================#
-                signal_list = []
-                
-                # --- Leggi il segnale dal file CSV ---
-                df = pd.read_csv(csv_filepath)
-                
-                for idx, col in enumerate(df.columns):
-                    df = df.rename(columns={df.columns[idx]: df.columns[idx].replace('\'', '')})
-
-                for col in colums_list:
-                    if col in df.columns:
-                        data = torch.from_numpy(df[col].values).unsqueeze(0)
-                    elif fill_and_concat_missing_channels:
-                        data = torch.zeros(MITBIHDataset._MAX_SAMPLE_NUM).unsqueeze(0)
-                    else:
-                        continue
-    
-                    signal_list.append(data)
-
-                signal = torch.cat(signal_list, dim=0)
-                
-                # Salva il segnale per il record corrente
-                cls._ALL_SIGNALS_DICT[record_name] = signal.float() 
-                
-                #========================================================================#
-                # ESTRAGGO LE ANNOTAZIONI
-                #========================================================================#
-                with open(txt_filepath, 'r') as f:
-                    f.readline() # Salta la prima riga (header)
+                    # -- Salva il segnale per il record corrente --
+                    cls._ALL_SIGNALS_DICT[record_name] = signal.float() 
+                    #========================================================================#
                     
-                    beat_dataDict_List: List[Dict[str, any]] = []
-                    tag_dataDict_List: List[Dict[str, any]] = []
-                    
-                    for line in f:
-                        line = line.strip()  # Rimuovi spazi bianchi
-                        parts = line.split() # Dividi la riga in base agli spazi e ignore le stringe vuote
-
-                        # Una riga di annotazione valida dovrebbe avere almeno 3 parti (Time, Sample #, Type)
-                        if len(parts) < 3:
-                            raise ValueError(f"Riga di annotazione non valida: {line}.")
-
-                        annotationType = BeatType.tokenize(parts[2])
-
-                        if BeatType.isBeat(annotationType):
-                            beat_dataDict_List.append({
-                                "annotation" : annotationType,          #tipologia di sample
-                                "sample_pos" : int(parts[1]),           # Indice del campione
-                                "time" : cls._formatTime(parts[0])      # Tempo in secondi
-                            })
-                        elif BeatType.isTag(annotationType):
-                            tag_dataDict_List.append({
-                                "annotation" : annotationType,          #tipologia di sample
-                                "sample_pos" : int(parts[1]),           # Indice del campione
-                                "time" : cls._formatTime(parts[0])      # Tempo in secondi
-                            })
-                            
-                                            
-                # Salva le annotazioni per il record corrente
-                cls._ALL_SIGNALS_BEAT_ANNOTATIONS_DICT[record_name] = beat_dataDict_List 
-                cls._ALL_SIGNALS_TAG_ANNOTATIONS_DICT[record_name] = tag_dataDict_List
                 progress_bar.update(1)
+            return True
+        
+        except Exception as e:
+            APP_LOGGER.error(f"Errore durante il caricamento dei segnali: {e}")
+            return False
+        
         finally:
             progress_bar.close()
+            
+    @classmethod 
+    def __makeWindows(cls) -> bool:
+        
+        progress_bar = tqdm(total=len(ArrhythmiaType.toList()), desc="")
+        
+        try:    
+            for (atype, records, label) in ArrhythmiaType.toList():
+                for record_name in records:
+                    progress_bar.set_description(f"{label} - record {record_name}")
+                
+                    
+            
+                    
+                progress_bar.update(1)
+            return True
+        
+        except Exception as e:
+            APP_LOGGER.error(f"Errore durante il caricamento dei segnali: {e}")
+            return False
+        
+        finally:
+            progress_bar.close()
+        
+        
 
     def __new__(cls, *args, **kwargs):
         return super(MITBIHDataset, cls).__new__(cls)  
