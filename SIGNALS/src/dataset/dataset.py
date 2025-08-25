@@ -13,6 +13,7 @@ import io
 from PIL import Image
 from tqdm import tqdm
 import matplotlib.pyplot as plt
+from torchvision import transforms
 from imblearn.over_sampling import SMOTE
 from sklearn.utils.class_weight import compute_class_weight
 
@@ -330,7 +331,7 @@ class MITBIHDataset(Dataset):
             
             for dict_d, tensors_list in zip([data_dict1, data_dict2], [train_tensors, test_tensors]):
                 for i, T in enumerate(tensors_list):
-                    dict_d[i] = {"x1": T, "x2":None, "s":False, "y":atype}
+                    dict_d[i] = {"x1": T, "x2":None, "s":False, "y":torch.tensor(atype)}
                   
             train_dict_windows[label] = data_dict1
             test_dict_windows[label]  = data_dict2
@@ -506,15 +507,38 @@ class MITBIHDataset(Dataset):
         
     def __new__(cls, *args, **kwargs):
         return super(MITBIHDataset, cls).__new__(cls)  
-        
     
-    def __init__(self, mode: DatasetMode):
+    def __len__(self) -> int:
+        return len(self.__index_mapping)
+
+    def __getitem__(self, idx: int) -> dict:
+        assert 0 <= idx < len(self.__index_mapping), f"Indice fuori range. Deve essere compreso tra 0 e {len(self.__index_mapping) - 1}."
+        
+        data_cloned = self.get(idx)
+        
+        if self._transforms is not None:
+            x = data_cloned['x2']
+            data_cloned['x2'] = self._transforms(x)
+            
+        return data_cloned
+    
+    def get(self, idx: int) -> dict:
+        return {
+            'x1': self.__index_mapping[idx]['x1'].detach().clone(),  # Segnale ECG
+            'x2': self.__index_mapping[idx]['x2'].detach().clone(),  # Spettrogramma
+            'y': self.__index_mapping[idx]['y'].detach().clone(),    # Etichetta
+            's': self.__index_mapping[idx]['s']  # Indica se il campione è sintetico
+        }
+    
+    def __init__(self, mode: DatasetMode, transform_pipe: transforms.Compose | None = None):
         assert MITBIHDataset._DATASET_PATH, "Il percorso del dataset non è stato impostato. Usa 'setDatasetPath' per impostarlo."
         assert MITBIHDataset._FILES_CHEKED, "files del dataset non verificati"
         #assert len(MITBIHDataset._ALL_SIGNALS_DICT) > 0, "I segnali non sono stati caricati. Usa 'initDataset' per caricarli."
+        assert transform_pipe is None or isinstance(transform_pipe, transforms.Compose), "'transform_pipe' deve essere di tipo 'transforms.Compose' o None."
    
         self._mode: DatasetMode = mode    
-        self.__weights: torch.Tensor | None = None  
+        self.__weights: torch.Tensor | None = None
+        self._transforms: transforms.Compose | None = transform_pipe  
         
      
                
@@ -544,7 +568,7 @@ class MITBIHDataset(Dataset):
         """Calcola e imposta i pesi delle classi per il set di training."""
         labels = []
         for d in self.__index_mapping:
-            labels.append(d['y'])
+            labels.append(d['y'].item())
             
         # Trova tutte le classi uniche presenti nel set di dati
         classes = np.unique(labels)
@@ -867,9 +891,5 @@ class MITBIHDataset(Dataset):
     
 
 
-    def __len__(self) -> int:
-        return len(self.__index_mapping)
 
-    def __getitem__(self, idx: int) -> dict:
-        return self.__index_mapping[idx]
     

@@ -16,11 +16,11 @@ class Mitbih_datamodule:
             datasetFolder:str,  
             batch_size: int = 1, 
             num_workers: int  = 1,
-            sample_rate: int | None = None,
-            sample_per_window: int | None = None,
-            sample_per_stride: int | None = None,
             pin_memory: bool = True,
-            persistent_workers: bool = True
+            persistent_workers: bool = True,
+            prefetch_factor: int = 2,
+            training_transform_pipe = None,
+            validation_transform_pipe = None,
         ):
         super().__init__()
         
@@ -33,13 +33,13 @@ class Mitbih_datamodule:
         self._datasetFolder = datasetFolder
         self._batch_size = batch_size
         self._num_workers = num_workers
-        self._sample_per_window = sample_per_window
-        self._sample_per_stride = sample_per_stride
-        self._sample_rate = sample_rate
+        # self._sample_per_window = sample_per_window
+        # self._sample_per_stride = sample_per_stride
+        # self._sample_rate = sample_rate
 
    
         
-        self._prefetch_factor: int = 2
+        self._prefetch_factor: int = prefetch_factor
         self._persistent_workers: bool = persistent_workers
         self._pin_memory: bool = pin_memory
         
@@ -50,9 +50,9 @@ class Mitbih_datamodule:
             
         MITBIHDataset.initDataset(path=datasetFolder, random_seed=120, windowing_offset=400)
      
-        self._TRAINING_DATASET = MITBIHDataset(mode=DatasetMode.TRAINING)
-        self._VALIDATION_DATASET = MITBIHDataset(mode=DatasetMode.VALIDATION)
-        self._TEST_DATASET = MITBIHDataset(mode=DatasetMode.TEST)
+        self._TRAINING_DATASET = MITBIHDataset(mode=DatasetMode.TRAINING, transform_pipe= training_transform_pipe)
+        self._VALIDATION_DATASET = MITBIHDataset(mode=DatasetMode.VALIDATION, transform_pipe= validation_transform_pipe)
+        self._TEST_DATASET = MITBIHDataset(mode=DatasetMode.TEST, transform_pipe= validation_transform_pipe)
     
     # def print_all_window(self, columNumber: int, save_path: str, dataset: MITBIHDataset) -> None:
         

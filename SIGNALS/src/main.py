@@ -7,6 +7,7 @@ import torch.optim as optim
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from torchvision import transforms
 from torch.optim import lr_scheduler
 from sklearn.metrics import confusion_matrix, f1_score, precision_score, accuracy_score, recall_score
 from sklearn.metrics import (
@@ -17,23 +18,32 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 import numpy as np
 import setting
+from trainer import Trainer
 
 from dataset.datamodule import Mitbih_datamodule
 
 
 def check_pytorch_cuda() -> bool:
-    #Globals.APP_LOGGER.info(f"PyTorch Version: {torch.__version__}")
     
-    if torch.cuda.is_available():
+    
+    setting.APP_LOGGER.info(f"PyTorch Version: {torch.__version__}")
+    
+    if torch.version.cuda is None:
+        setting.APP_LOGGER.error(f"Cuda Version: {torch.version.cuda}")
+        setting.APP_LOGGER.error("CUDA is not available on this system.")
+        setting.APP_LOGGER.error(f"Available GPUs: {torch.cuda.device_count()}")
+        return False
+    
+    else:
+        setting.APP_LOGGER.info(f"Cuda Version: {torch.version.cuda}")
         setting.APP_LOGGER.info("CUDA is available on this system.")
         setting.APP_LOGGER.info(f"Available GPUs: {torch.cuda.device_count()}")
         for i in range(torch.cuda.device_count()):
             setting.APP_LOGGER.info(f"Device {i}: {torch.cuda.get_device_name(i)}")
+        
         return True
-    else:
-        setting.APP_LOGGER.info("CUDA is not available on this system.")
-        return False
     
+
 def main():
 
     # parser = argparse.ArgumentParser(description="Script per configurare e addestrare un modello Transformer sui dati MIT-BIH.")
@@ -48,24 +58,59 @@ def main():
     # parser.add_argument("--batch_size", type=int, default=16, help=f"Dimensione del batch per il training (default: {16})")
     # parser.add_argument("--num_workers", type=int, default=4, help=f"Numero di worker per il DataLoader (default: {4})")
     
+    check_pytorch_cuda()
+    
+    
+    train_transforms = transforms.Compose([
+        transforms.RandomHorizontalFlip(p=0.5),
+    ])
+
+    
     
     datamodule = Mitbih_datamodule(
         datasetFolder=r"C:\Users\Utente\Desktop\Progetto_DataMining\Dataset\mitbih_database", 
-        batch_size=16, 
+        batch_size=100, 
         num_workers=4,
-        sample_rate=360,
-        sample_per_window=400,
-        sample_per_stride=200,
         pin_memory=True,
-        persistent_workers=True
+        persistent_workers=True,
+        prefetch_factor=2,
+        training_transform_pipe = train_transforms,
+        validation_transform_pipe = None,
     )
     
-    check_pytorch_cuda()
     train_dataset=datamodule.get_train_dataset()
     
-    print(len(train_dataset))
-    print(train_dataset[0])
-    train_dataset.show_sample_spectrogram(400)
+    data = train_dataset[0]
+    
+    print(data["x1"].shape)
+    print(data["x2"].shape)
+    print(data["y"].shape)
+    
+    
+    
+    
+    from nn_models.resnet import ResNet18,ResNet34
+    from nn_models.ECG_CNN import ECG_CNN_2D
+    from trainer import Schedulers
+    
+    model = ECG_CNN_2D()
+    #torch.hub.load('pytorch/vision:v0.10.0', 'resnet18', pretrained=False, num_classes=5)
+    
+    trainer = Trainer(
+        workingDirectory=setting.OUTPUT_PATH,
+        datamodule=datamodule,
+        device=torch.device("cuda" if torch.cuda.is_available() else "cpu"),
+        model=model,
+    )
+    
+    trainer.train(
+        num_epochs=100,
+        lr=0.001,
+        schedulerType=Schedulers.COSINE_ANNEALING_LR,
+        scheduler_params={'eta_min':5e-5}
+    )
+    
+    
     
     
 if __name__ == "__main__":

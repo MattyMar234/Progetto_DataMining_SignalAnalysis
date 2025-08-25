@@ -4,6 +4,7 @@ from typing import Any, Final
 from pathlib import Path
 import os
 from colorama import Fore, Style, init
+from tqdm import tqdm
 
 # Initialize colorama for Windows compatibility
 init(autoreset=True)
@@ -52,7 +53,17 @@ if not os.path.exists(LOGS_FOLDER):
 
 # APP_LOGGER: Logger | None = None # Will be initialized below
 
+class TqdmLoggingHandler(logging.Handler):
+    def __init__(self, level=logging.NOTSET):
+        super().__init__(level)
 
+    def emit(self, record):
+        try:
+            msg = self.format(record)
+            tqdm.write(msg)   # stampa senza rompere la barra
+            self.flush()
+        except Exception:
+            self.handleError(record)
 
 class ColoredFormatter(logging.Formatter):
     """

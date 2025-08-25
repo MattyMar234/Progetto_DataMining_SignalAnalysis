@@ -2,6 +2,6 @@ __pycache__/
 Models/
 Data/
 
-installed_packages.txt
+#installed_packages.txt
 tempCodeRunnerFile.py
 *.pyc
