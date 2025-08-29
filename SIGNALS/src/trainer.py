@@ -2,11 +2,11 @@
 from enum import Enum
 import json
 import os
-from typing import Any, Dict, Final, List
+from typing import Any, Callable, Dict, Final, List
 import matplotlib.pyplot as plt
 import numpy as np
 import seaborn
-from sklearn.metrics import accuracy_score, confusion_matrix, f1_score, precision_score, recall_score
+from sklearn.metrics import accuracy_score, cohen_kappa_score, confusion_matrix, f1_score, precision_recall_fscore_support, precision_score, recall_score
 from tqdm import tqdm
 from setting import APP_LOGGER, ColoredFormatter, TqdmLoggingHandler
 from dataset.datamodule import Mitbih_datamodule
@@ -69,7 +69,8 @@ class Schedulers(Enum):
 
 class Trainer:
     
-    __DATA_FILE_NAME: Final[str] = 'training_data.json'
+    __TRAINING_DATA_FILE_NAME: Final[str] = 'training_data.json'
+    __TEST_DATA_FILE_NAME: Final[str] = 'test_data.txt'
     
     def __init__(
             self, 
@@ -77,6 +78,8 @@ class Trainer:
             datamodule:Mitbih_datamodule, 
             device: torch.device, 
             model: torch.nn.Module, 
+            optimizer: torch.optim.Optimizer | None = None,
+            scheduler: Any | None = None,
             top_k_checkpoints: int = 3
         ) -> None:
         """
@@ -95,20 +98,30 @@ class Trainer:
         assert isinstance(device, torch.device), "device must be an instance of torch.device"
         assert isinstance(model, torch.nn.Module), "model must be an instance of torch.nn.Module"
         assert isinstance(top_k_checkpoints, int) and top_k_checkpoints > 0, "top_k_checkpoints must be a positive integer"
+        assert scheduler is not None
+        
+        if optimizer is not None:
+            assert isinstance(optimizer, torch.optim.Optimizer), "optimizer must be an instance of torch.optim.Optimizer"
         
         self._workingDirectory = os.path.join(workingDirectory, model.__class__.__name__)
         self._checkpointPath = os.path.join(self._workingDirectory, 'checkpoints')
         self._logsPath = os.path.join(self._workingDirectory, 'logs')
         self._pltPath = os.path.join(self._workingDirectory, 'plots')
         self._trainingDataPath = os.path.join(self._workingDirectory, 'training_data')
+        self._evaluationPath = os.path.join(self._workingDirectory, 'evaluation')
+        
         self._dataModule = datamodule
         self._device = device
         self._model = model
+        self._optimizer = optimizer
+        self._scheduler = scheduler
         self._top_k_checkpoints = top_k_checkpoints
         
         self.__best_val_loss = float('inf')
         self.__start_epoch: int = 0
         self.__top_checkpoints: List[tuple] = []
+        
+        self.__top_checkpoints_path: Dict[float, str] = {}
         
     def __setupWorkingDirectory(self) -> bool:
         """Crea le directory necessarie per il training"""
@@ -117,6 +130,7 @@ class Trainer:
             os.makedirs(self._logsPath, exist_ok=True)
             os.makedirs(self._pltPath, exist_ok=True)
             os.makedirs(self._trainingDataPath, exist_ok=True)
+            os.makedirs(self._evaluationPath, exist_ok=True)
             return True
         except Exception as e:
             APP_LOGGER.error(f"Errore durante la creazione delle directory: {e}")
@@ -124,7 +138,7 @@ class Trainer:
         
     def __restoreLastTrainingData(self) -> None:
         """Ripristina i dati dell'ultimo training"""
-        path = os.path.join(self._trainingDataPath, Trainer.__DATA_FILE_NAME)
+        path = os.path.join(self._trainingDataPath, Trainer.__TRAINING_DATA_FILE_NAME)
         
         if os.path.exists(path):
             try:
@@ -157,6 +171,17 @@ class Trainer:
         try:
             checkpoint = torch.load(checkpoint_path, map_location=self._device)
             self._model.load_state_dict(state_dict=checkpoint['model_state_dict'], strict=True)
+            
+            # Ripristina lo stato dell'optimizer se disponibile
+            if self._optimizer is not None and 'optimizer_state_dict' in checkpoint:
+                self._optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+                APP_LOGGER.info("Stato dell'optimizer ripristinato")
+            
+            # Ripristina lo stato dello scheduler se disponibile
+            if self._scheduler is not None and 'scheduler' in checkpoint:
+                self._scheduler.load_state_dict(checkpoint['scheduler'])
+                APP_LOGGER.info("Stato dello scheduler ripristinato")
+                
             APP_LOGGER.info(f"Caricato checkpoint da {checkpoint_path}")
         except Exception as e:
             APP_LOGGER.error(f"Errore durante il caricamento del checkpoint: {e}")    
@@ -191,7 +216,7 @@ class Trainer:
             'top_checkpoints': self.__top_checkpoints
         }
         
-        path = os.path.join(self._trainingDataPath, Trainer.__DATA_FILE_NAME)
+        path = os.path.join(self._trainingDataPath, Trainer.__TRAINING_DATA_FILE_NAME)
         
         try:
             with open(path, 'w') as f:
@@ -199,12 +224,13 @@ class Trainer:
         except Exception as e:
             APP_LOGGER.error(f"Errore durante il salvataggio dei dati di training: {e}")
     
-    def __save_checkpoint(self, epoch: int, val_loss: float, optimizer: torch.optim.Optimizer) -> None:
+    def __save_checkpoint(self, epoch: int, val_loss: float) -> str:
         """Salva un checkpoint e gestisce i migliori top_k checkpoint"""
         checkpoint = {
             'epoch': epoch,
             'model_state_dict': self._model.state_dict(),
-            'optimizer_state_dict': optimizer.state_dict(),
+            'optimizer_state_dict': self._optimizer.state_dict(),
+            'scheduler': self._scheduler.state_dict() if self._scheduler is not None else None,
             'val_loss': val_loss,
             'best_val_loss': self.__best_val_loss
         }
@@ -236,16 +262,15 @@ class Trainer:
         
         # Aggiorna i dati di training
         self.__saveTrainingData()
+        return checkpoint_path
+    
     
 
-    
     def train(
             self, 
             num_epochs: int = 10, 
             lr: float = 0.001,
-            schedulerType: Schedulers = Schedulers.NONE,
-            scheduler_params: Dict[str, int | float] = {},
-        ) -> None:
+        ) -> dict:
         """
         Addestra il modello utilizzando i dati di training.
         
@@ -254,59 +279,26 @@ class Trainer:
             epochs: Numero di epoche di addestramento (default: 10).
             lr: Learning rate per l'ottimizzatore (default: 0.001).
         """
-        
-        self.__setupWorkingDirectory()
-        self.__restoreLastTrainingData()
+        # Se non è stato fornito un optimizer, creane uno nuovo
+        if self._optimizer is None:
+            self._optimizer = torch.optim.Adam(self._model.parameters(), lr=lr)
         
         self._model.to(self._device)
-        
-        
-        optimizer = torch.optim.Adam(self._model.parameters(), lr=lr)
-        criterion = FocalCrossEntropyLoss(alpha=1, gamma=2, reduction='mean')
-        
-        # Inizializza lo scheduler se specificato
-        scheduler_instance = None
-        
-        match schedulerType:
-            
-            case Schedulers.NONE:
-                pass
-            case Schedulers.STEP_LR:
-                step_size = scheduler_params.get('step_size', 10)
-                gamma = scheduler_params.get('gamma', 0.1)
-                scheduler_instance = torch.optim.lr_scheduler.StepLR(optimizer, step_size=step_size, gamma=gamma)
-            
-            case Schedulers.EXPONENTIAL_LR:
-                gamma = scheduler_params.get('gamma', 0.95)
-                scheduler_instance = torch.optim.lr_scheduler.ExponentialLR(optimizer, gamma=gamma)
-            
-            case Schedulers.COSINE_ANNEALING_LR:
-                T_max = scheduler_params.get('T_max', num_epochs)
-                eta_min = scheduler_params.get('eta_min', 0)
-                scheduler_instance = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=T_max, eta_min=eta_min)
-            
-            case Schedulers.REDUCE_ON_PLATEAU:
-                mode = scheduler_params.get('mode', 'min')
-                factor = scheduler_params.get('factor', 0.1)
-                patience = scheduler_params.get('patience', 10)
-                threshold = scheduler_params.get('threshold', 1e-4)
-                scheduler_instance = torch.optim.lr_scheduler.ReduceLROnPlateau(
-                    optimizer, mode=mode, factor=factor, patience=patience, threshold=threshold
-                )
-        
-            
-            
-        
-        class_weights = self._dataModule.get_train_dataset().get_class_weights()
+        self.__setupWorkingDirectory()
+        self.__restoreLastTrainingData()
 
-        if class_weights is not None:
-            class_weights = class_weights.to(self._device)
-            criterion = FocalCrossEntropyLoss(alpha=1, gamma=2, reduction='mean', class_weights=class_weights)
+        class_weights = self._dataModule.get_train_dataset().get_class_weights()
+  
+        criterion = FocalCrossEntropyLoss(
+            alpha=1, 
+            gamma=2, 
+            reduction='mean',
+            class_weights=class_weights.to(self._device) if class_weights is not None else None
+        )    
         
+
         train_loader = self._dataModule.train_dataloader()
         val_loader = self._dataModule.val_dataloader()
-        
-
         log_file_path = os.path.join(self._logsPath, 'training_log.csv')
         
         str1 = f"Epoch"
@@ -344,13 +336,12 @@ class Trainer:
                     log_file.write(header)
                     log_file.flush()  # Assicurati che i dati vengano scritti immediatamente sul disco
                 
-                
             
                 for epoch in range(self.__start_epoch, num_epochs):
                     APP_LOGGER.info(f"{'-'*80}")
                     APP_LOGGER.info(f"Epoca {epoch+1}/{num_epochs}")
                     
-                    actual_lr = optimizer.param_groups[0]['lr']
+                    actual_lr = self._optimizer.param_groups[0]['lr']
                     epoch_bar.set_postfix({"lr": f"{actual_lr:.6f}"})
                     epoch_bar.refresh()
                     
@@ -361,6 +352,8 @@ class Trainer:
                     all_train_predictions = []
                     training_bar.n = 0
                     training_bar.refresh()
+                    validation_bar.n = 0
+                    validation_bar.refresh()
                     
                     # Crea la barra di progresso per il training
                     # train_pbar = tqdm(
@@ -375,11 +368,11 @@ class Trainer:
                         x = data['x2'].to(self._device)
                         y = data['y'].to(self._device)
                         
-                        optimizer.zero_grad()
+                        self._optimizer.zero_grad()
                         y_hat = self._model(x)
                         loss = criterion(y_hat, y)
                         loss.backward()
-                        optimizer.step()
+                        self._optimizer.step()
                         
                         # Aggiorna la loss totale
                         batch_loss = loss.item()
@@ -412,8 +405,7 @@ class Trainer:
                     val_loss = 0.0
                     all_val_targets = []
                     all_val_predictions = []
-                    validation_bar.n = 0
-                    validation_bar.refresh()
+                    
                     
                     # Crea la barra di progresso per la validazione
                     # val_pbar = tqdm(
@@ -457,19 +449,28 @@ class Trainer:
                     APP_LOGGER.info(f"Epoca {epoch+1} - Loss di validazione: {avg_val_loss:.4f}, Accuracy: {val_metrics['accuracy']:.4f}")
                     
                     # Aggiorna lo scheduler
-                    if scheduler_instance is not None:
-                        match schedulerType:
-                            case Schedulers.REDUCE_ON_PLATEAU:
-                                scheduler_instance.step(avg_val_loss)
-                            case _ :
-                                scheduler_instance.step()
-                                
+                    if self._scheduler is not None:
+                        try:
+                            self._scheduler.step()
+                        except:
+                            try:
+                                self._scheduler.step(avg_val_loss)
+                            except Exception as e:
+                                print(e)
+                                os._exit(1)
+                                    
+                        
                     # Salva il checkpoint se la loss di validazione è migliorata
                     if avg_val_loss < self.__best_val_loss:
                         self.__best_val_loss = avg_val_loss
-                        self.__save_checkpoint(epoch, avg_val_loss, optimizer)
-                        self.__save_confusion_matrix(val_targets_tensor, val_preds_tensor, epoch)
-                    
+                        self.__save_checkpoint(epoch, avg_val_loss)
+                        # self._plot_and_save_confusion_matrix(
+                        #     val_targets_tensor, 
+                        #     val_preds_tensor,
+                        #     f"Confusion Matrix - Epoch {epoch+1}",
+                        #     os.path.join(self._pltPath, f'confusion_matrix_epoch_{epoch+1}.png')
+                        # )
+                        
                     # Aggiorna l'epoca di partenza per il prossimo training
                     self.__start_epoch = epoch + 1
                     self.__saveTrainingData()
@@ -490,6 +491,7 @@ class Trainer:
                     log_file.flush()
                     epoch_bar.update(1)
                     epoch_bar.refresh()
+                    
         except Exception as e:
             APP_LOGGER.error(f"Errore durante l'addestramento: {e}") 
         finally:
@@ -503,7 +505,179 @@ class Trainer:
             
             for h in original_handlers:
                 APP_LOGGER.addHandler(h)
-                   
+        
+        return {
+            "bestModel_path": self.__top_checkpoints[0][1] if self.__top_checkpoints else None
+        }           
+    
+    def evaluate_model(
+        self,
+        unique_labels: List[int],
+        label_mapper: Callable[[int], str],
+        checkpoint_path: str | None = None,
+        ignore_index: int = -100,
+        name: str = "test_evaluation"
+    ) -> Dict[str, Any]:
+        
+        # Se non viene specificato un checkpoint, usa il migliore disponibile
+        if checkpoint_path is None:
+            if not self.__top_checkpoints:
+                raise ValueError("Nessun checkpoint disponibile per la valutazione")
+            
+            # Prendi il checkpoint con la loss di validazione più bassa
+            best_checkpoint = min(self.__top_checkpoints, key=lambda x: x[0])
+            checkpoint_path = best_checkpoint[1]
+            # checkpoint_filename = f'checkpoint_epoch_{epoch}_val_loss_{val_loss:.4f}.pt'
+            # checkpoint_path = os.path.join(self._checkpointPath, checkpoint_filename)
+            APP_LOGGER.info(f"Utilizzo del miglior checkpoint disponibile: {checkpoint_path}")
+        
+        # Crea una cartella per questa valutazione specifica
+        eval_dir = os.path.join(self._evaluationPath, name)
+        os.makedirs(eval_dir, exist_ok=True)
+        
+        # Carica il checkpoint
+        APP_LOGGER.info(f"Caricamento checkpoint da {checkpoint_path}")
+        checkpoint = torch.load(checkpoint_path, map_location=self._device)
+        self._model.load_state_dict(state_dict=checkpoint['model_state_dict'], strict=True)
+        self._model.to(self._device)
+        self._model.eval()
+        
+        # Prepara il dataloader di test
+        test_dataloader = self._dataModule.test_dataloader()
+        all_preds = []
+        all_targets = []
+        
+        # Valutazione del modello
+        with torch.no_grad(): 
+            for batch in tqdm(test_dataloader, desc=f"Valutazione {name}"): 
+                x = batch['x2'].to(self._device)
+                y = batch['y'].to(self._device)
+               
+                # Ottieni le predizioni
+                outputs = self._model(x)
+                preds = torch.argmax(outputs, dim=1) 
+                
+                # Filtra gli indici ignorati
+                #valid_mask = (y != ignore_index)
+                all_preds.extend(preds.cpu().numpy())
+                all_targets.extend(y.cpu().numpy())
+        
+        # Se non sono stati forniti etichette e mapper, prova a ottenerli dal datamodule
+        if unique_labels is None or label_mapper is None:
+            try:
+                dataset = self._dataModule.get_test_dataset()
+                if unique_labels is None:
+                    unique_labels = dataset.get_unique_labels()
+                if label_mapper is None:
+                    label_mapper = dataset.get_label_mapper()
+            except AttributeError:
+                if unique_labels is None:
+                    unique_labels = sorted(set(all_targets))
+                if label_mapper is None:
+                    label_mapper = lambda x: str(x)
+        
+        # Calcola le metriche per etichetta
+        precision_per_label, recall_per_label, f1_per_label, support_per_label = precision_recall_fscore_support(
+            all_targets, all_preds, labels=unique_labels, average=None, zero_division=0
+        ) 
+        
+        APP_LOGGER.info(f"\n--- REPORT DI VALUTAZIONE: {name.upper()} ---")
+        
+        per_label_metrics = {}
+        for i, label_idx in enumerate(unique_labels):
+            label_name = label_mapper(label_idx)
+            num_instances = support_per_label[i]
+            precision = precision_per_label[i]
+            recall = recall_per_label[i]
+            f1 = f1_per_label[i]
+            
+            APP_LOGGER.info(
+                f"{label_name}: Istanze={int(num_instances)}, "
+                f"Precision={precision:.4f}, Recall={recall:.4f}, F1={f1:.4f}"
+            )
+            
+            per_label_metrics[label_name] = {
+                "Instances": int(num_instances),
+                "Precision": precision,
+                "Recall": recall,
+                "F1-Score": f1,
+            }
+        
+        # Calcola le metriche medie ponderate
+        weighted_precision = precision_score(all_targets, all_preds, average='weighted', labels=unique_labels, zero_division=0)
+        weighted_recall = recall_score(all_targets, all_preds, average='weighted', labels=unique_labels, zero_division=0)
+        weighted_f1 = f1_score(all_targets, all_preds, average='weighted', labels=unique_labels, zero_division=0)
+        
+        APP_LOGGER.info(
+            f"\nWeighted Avg : Precision={weighted_precision:.4f}, "
+            f"Recall={weighted_recall:.4f}, F1={weighted_f1:.4f}"
+        )
+        
+        # Calcola le metriche complessive
+        overall_accuracy = accuracy_score(all_targets, all_preds)
+        overall_kappa = cohen_kappa_score(all_targets, all_preds)
+        
+        APP_LOGGER.info(
+            f"Overall Accuracy : {overall_accuracy:.4f}, "
+            f"Overall Kappa: {overall_kappa:.4f}"
+        )
+        
+        # Calcola e salva la matrice di confusione
+        cm = confusion_matrix(all_targets, all_preds, labels=unique_labels)
+        cm_path = os.path.join(eval_dir, f"confusion_matrix.png")
+        
+        self._plot_and_save_confusion_matrix(
+            torch.tensor(all_targets), 
+            torch.tensor(all_preds),
+            f"Matrice di Confusione - ({name})",
+            cm_path,
+            labels=[label_mapper(i) for i in unique_labels],
+            normalized=True
+        )
+        
+        # Salva i risultati in un file di testo
+        results_path = os.path.join(eval_dir, f"results.txt")
+        with open(results_path, 'w') as f:
+            f.write(f"--- REPORT DI VALUTAZIONE: {name.upper()} ---\n\n")
+            
+            for label_idx in unique_labels:
+                label_name = label_mapper(label_idx)
+                metrics = per_label_metrics[label_name]
+                f.write(
+                    f"{label_name}: Istanze={metrics['Instances']}, "
+                    f"Precision={metrics['Precision']:.4f}, Recall={metrics['Recall']:.4f}, "
+                    f"F1={metrics['F1-Score']:.4f}\n"
+                )
+            
+            f.write(
+                f"\nWeighted Avg : Precision={weighted_precision:.4f}, "
+                f"Recall={weighted_recall:.4f}, F1={weighted_f1:.4f}\n"
+            )
+            
+            f.write(
+                f"\nOverall Accuracy : {overall_accuracy:.4f}, "
+                f"Overall Kappa: {overall_kappa:.4f}\n"
+            )
+        
+        # Prepara i risultati
+        results = {
+            "per_label_metrics": per_label_metrics,
+            "weighted_average": {
+                "Precision": weighted_precision,
+                "Recall": weighted_recall,
+                "F1-Score": weighted_f1,
+            },
+            "overall_metrics": {
+                "Accuracy": overall_accuracy,
+                "Kappa": overall_kappa,
+            },
+            "results_path": results_path,
+            "confusion_matrix_path": cm_path
+        }
+        
+        return results
+    
+    
     def __compute_metrics(self, y_true: torch.Tensor, y_pred: torch.Tensor) -> Dict[str, float]:
         """Calcola le metriche di valutazione"""
         y_true_np = y_true.cpu().numpy()
@@ -521,36 +695,41 @@ class Trainer:
         
         return metrics
 
-    def __save_confusion_matrix(self, y_true: torch.Tensor, y_pred: torch.Tensor, epoch: int) -> None:
-        """Salva la matrice di confusione come immagine"""
+    def _plot_and_save_confusion_matrix(
+        self, 
+        y_true: torch.Tensor, 
+        y_pred: torch.Tensor, 
+        title: str, 
+        path: str, 
+        labels: List[str],
+        normalized: bool = True
+    ) -> None:
+        """Calcola, plotta e salva la matrice di confusione."""
         y_true_np = y_true.cpu().numpy()
         y_pred_np = y_pred.cpu().numpy()
         
         # Calcola la matrice di confusione
         cm = confusion_matrix(y_true_np, y_pred_np)
         
-        # Normalizza la matrice per visualizzazione migliore
-        cm_normalized = cm.astype('float') / cm.sum(axis=1)[:, np.newaxis]
+        if normalized:
+            cm = cm.astype('float') / cm.sum(axis=1)[:, np.newaxis]
         
-        # Crea la figura
         plt.figure(figsize=(10, 8))
         seaborn.heatmap(
-            cm_normalized, 
+            cm, 
             annot=True, 
-            fmt='.2f', 
+            fmt='.2f' if normalized else 'd', 
             cmap='Blues',
-            cbar=False
+            cbar=False,
+            xticklabels=labels,
+            yticklabels=labels
         )
-        plt.title(f'Confusion Matrix - Epoch {epoch+1}')
+        plt.title(title)
         plt.ylabel('True Label')
         plt.xlabel('Predicted Label')
         
-        # Salva l'immagine
-        cm_path = os.path.join(self._pltPath, f'confusion_matrix_epoch_{epoch+1}.png')
-        plt.savefig(cm_path, bbox_inches='tight')
+        plt.savefig(path, bbox_inches='tight')
         plt.close()
         
-        APP_LOGGER.info(f"Salvata matrice di confusione: {cm_path}")
-
-        
-            
+        APP_LOGGER.info(f"Matrice di confusione salvata in: {path}")
+       

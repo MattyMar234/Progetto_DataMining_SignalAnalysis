@@ -1,3 +1,4 @@
+from enum import Enum, auto
 from matplotlib import pyplot as plt
 from PIL import Image
 import torch
@@ -6,8 +7,10 @@ import os
 
 from tqdm import tqdm
 
-from dataset.dataset import MITBIHDataset, DatasetMode
+from dataset.dataset import MITBIHDataset, DatasetMode, SplitMode
 from torch.utils.data import DataLoader
+
+
 
 
 class Mitbih_datamodule:
@@ -21,6 +24,10 @@ class Mitbih_datamodule:
             prefetch_factor: int = 2,
             training_transform_pipe = None,
             validation_transform_pipe = None,
+            splitMode: SplitMode = SplitMode.RANDOM,
+            random_seed: int = 120,
+            use_smote_on_training:bool = False,
+            use_smote_on_validation: bool = False
         ):
         super().__init__()
         
@@ -47,126 +54,22 @@ class Mitbih_datamodule:
             self._persistent_workers = False
             self._pin_memory = False
             self._prefetch_factor = 1
+        
             
-        MITBIHDataset.initDataset(path=datasetFolder, random_seed=120, windowing_offset=400)
+        MITBIHDataset.initDataset(
+            path=datasetFolder, 
+            random_seed=random_seed, 
+            windowing_offset=400,
+            splitMode=splitMode
+            # use_smote_on_training=use_smote_on_training,
+            # use_smote_on_validation=use_smote_on_validation
+        )
      
         self._TRAINING_DATASET = MITBIHDataset(mode=DatasetMode.TRAINING, transform_pipe= training_transform_pipe)
         self._VALIDATION_DATASET = MITBIHDataset(mode=DatasetMode.VALIDATION, transform_pipe= validation_transform_pipe)
         self._TEST_DATASET = MITBIHDataset(mode=DatasetMode.TEST, transform_pipe= validation_transform_pipe)
     
-    # def print_all_window(self, columNumber: int, save_path: str, dataset: MITBIHDataset) -> None:
-        
-    #     os.makedirs(save_path, exist_ok=True)
-    #     window_imgs = []
 
-    #     for i in tqdm(range(len(dataset)), desc=f"Plotting windows"):
-    #         img = self.print_window(dir_save_path="", dataset=dataset, index=i, show_plot= False, getFile=True)
-    #         if img is not None:
-    #             window_imgs.append(img.convert("RGB"))
-
-    #     if not window_imgs:
-    #         print(f"Nessuna immagine generata")
-    #         return
-
-    #     # Calcola la larghezza massima e l'altezza totale
-    #     widths, heights = zip(*(img.size for img in window_imgs))
-    #     max_width = max(widths)
-    #     total_height = sum(heights)
-
-    #     # Crea una nuova immagine vuota per concatenare tutte le finestre
-    #     concatenated_img = Image.new('RGB', (max_width, total_height))
-    #     y_offset = 0
-    #     for img in window_imgs:
-    #         concatenated_img.paste(img, (0, y_offset))
-    #         y_offset += img.size[1]
-
-    #     concatenated_img.save(save_path)
-    #     print(f"Immagine concatenata salvata in: {save_path}")
-        
-    
-    
-    # def print_window(self, dir_save_path: str, dataset: MITBIHDataset, index: int | str, show_plot: bool = False, getFile: bool = False) -> Image.Image | None:
-    #     assert isinstance(dataset, MITBIHDataset)
-        
-    #     #assert os.path.exists(save_path)
-        
-    #     window_data: dict = {}
-        
-    #     if isinstance(index, str):
-    #         labl = BeatType.tokenize(index)
-            
-    #         if labl is None:
-    #             print(f"Etichetta {index} non valida.")
-    #             return None
-            
-    #         for i in range(len(dataset)):
-    #             window_data = dataset.get(i)
-    #             signal = window_data['signal_fragment']
-    #             label = window_data['beatType']
-                
-    #             if label == labl:
-    #                 break
-    #         else:
-    #             print(f"Etichetta {index} non trovata nel dataset.")
-    #             return None
-        
-    #     else:
-    #         window_data = dataset.get(index)
-            
-    #         signal = window_data['signal_fragment']
-    #         label = window_data['beatType']
-            
-    #     label_str = f"Beat Type: {label}"
-    #     time = torch.arange(signal.shape[1]) / self._sample_rate
-        
-    #     plt.figure(figsize=(8, 6))
-    #     plt.title(label_str)
-    #     plt.plot(time.numpy(), signal[0].numpy())
-    #     plt.plot(time.numpy(), signal[1].numpy())
-    #     plt.grid(True)
-    #     plt.xlabel('Time (s)')
-    #     plt.ylabel('Amplitude')
-    #     # plt.xlim(0, signal.shape[1] / self._sample_rate)
-    #     # plt.ylim(0, 1)
-    #     plt.legend(['MLII', 'V1'])
-    #     plt.tight_layout()
-        
-    #     if dir_save_path:
-    #         if getFile:
-    #             buf = io.BytesIO()
-    #             plt.savefig(buf, format='png')
-    #             plt.close()
-    #             buf.seek(0)
-    #             img = Image.open(buf)
-    #             return img
-    #         else:
-    #             # Assicurati che la directory esista
-    #             os.makedirs(os.path.dirname(dir_save_path), exist_ok=True)
-    #             plt.savefig(dir_save_path)
-    #             print(f"Plot salvato in: {dir_save_path}")
-
-    #     if show_plot:
-    #         plt.show()
-    #     else:
-    #         plt.close() # Chiudi la figura se non deve essere mostrata
-    
-    # def print_all_training_ecg_signals(self, output_folder: str) -> None:
-    #     os.makedirs(output_folder, exist_ok=True)
-        
-    #     for s in sorted(MITBIHDataset.TRAINING_RECORDS):
-    #         self._TRAINING_DATASET.plot_all_windows_for_record(s, output_folder)
-    #         #MITBIHDataset.plot_all_windows_for_record()
-    
-    # def print_training_record(self, record_name: str, output_folder: str) -> None:
-    #     self._TRAINING_DATASET.plot_all_windows_for_record(record_name, output_folder)
-            
-    # def print_validation_plot_bpm_distribution(self, output_folder: str) -> None:
-    #     os.makedirs(output_folder, exist_ok=True)
-    #     self._VALIDATION_DATASET.plot_bpm_distribution(output_folder)
-      
-    # def print_training_plot_bpm_distribution(self, output_folder: str) -> None:
-    #     os.makedirs(output_folder, exist_ok=True)
-    #     self._TRAINING_DATASET.plot_bpm_distribution(output_folder)
       
         
     def train_dataloader(self) -> DataLoader:
@@ -176,7 +79,7 @@ class Mitbih_datamodule:
         return DataLoader(self._VALIDATION_DATASET, batch_size=self._batch_size, num_workers=self._num_workers, shuffle=False, pin_memory=self._pin_memory, persistent_workers=self._persistent_workers, drop_last=True, prefetch_factor=self._prefetch_factor)
 
     def test_dataloader(self) -> DataLoader:
-        return DataLoader(self._TEST_DATASET, batch_size=self._batch_size, num_workers=self._num_workers, shuffle=True, pin_memory=self._pin_memory, persistent_workers=self._persistent_workers, drop_last=True, prefetch_factor=self._prefetch_factor)
+        return DataLoader(self._TEST_DATASET, batch_size=1, num_workers=self._num_workers, shuffle=True, pin_memory=self._pin_memory, persistent_workers=self._persistent_workers, drop_last=True, prefetch_factor=self._prefetch_factor)
     
     
     def get_train_dataset(self) :

@@ -1,6 +1,7 @@
 import argparse
 from enum import Enum, auto
 import math
+import os
 from typing import Final, List, Tuple
 from tqdm.auto import tqdm
 import torch.optim as optim
@@ -21,6 +22,7 @@ import setting
 from trainer import Trainer
 
 from dataset.datamodule import Mitbih_datamodule
+from dataset.dataset import ArrhythmiaType
 
 
 def check_pytorch_cuda() -> bool:
@@ -60,57 +62,87 @@ def main():
     
     check_pytorch_cuda()
     
+    from nn_models.ECG_CNN import ECG_CNN_2D
+    from nn_models.resnet import ResNet18,ResNet34
+    from nn_models.visionTransformer import ViT1,ViT2
+    from nn_models.segFormer import SegFormer
+    from trainer import Schedulers
+    
     
     train_transforms = transforms.Compose([
         transforms.RandomHorizontalFlip(p=0.5),
     ])
+    
+    seeds: list = [48**i for i in range(1,4)]
+    start_lr:float = 0.005
+    num_epochs = 100
 
+    for seed in seeds:
+
+        datamodule = Mitbih_datamodule(
+            datasetFolder=r"C:\Users\Utente\Desktop\Progetto_DataMining\Dataset\mitbih_database", 
+            batch_size=150, 
+            num_workers=5,
+            pin_memory=True,
+            persistent_workers=True,
+            prefetch_factor=2,
+            training_transform_pipe = train_transforms,
+            validation_transform_pipe = None,
+            random_seed=seed,
+            use_smote_on_validation=True
+        )
+        
+        # print(f"training size: {len(datamodule.get_train_dataset())}")
+        # print(f"validation size: {len(datamodule.get_val_dataset())}")
+        # print(f"Test size: {len(datamodule.get_test_dataset())}")
     
     
-    datamodule = Mitbih_datamodule(
-        datasetFolder=r"C:\Users\Utente\Desktop\Progetto_DataMining\Dataset\mitbih_database", 
-        batch_size=100, 
-        num_workers=4,
-        pin_memory=True,
-        persistent_workers=True,
-        prefetch_factor=2,
-        training_transform_pipe = train_transforms,
-        validation_transform_pipe = None,
-    )
-    
-    train_dataset=datamodule.get_train_dataset()
-    
-    data = train_dataset[0]
-    
-    print(data["x1"].shape)
-    print(data["x2"].shape)
-    print(data["y"].shape)
-    
-    
-    
-    
-    from nn_models.resnet import ResNet18,ResNet34
-    from nn_models.ECG_CNN import ECG_CNN_2D
-    from trainer import Schedulers
-    
-    model = ECG_CNN_2D()
-    #torch.hub.load('pytorch/vision:v0.10.0', 'resnet18', pretrained=False, num_classes=5)
-    
-    trainer = Trainer(
-        workingDirectory=setting.OUTPUT_PATH,
-        datamodule=datamodule,
-        device=torch.device("cuda" if torch.cuda.is_available() else "cpu"),
-        model=model,
-    )
-    
-    trainer.train(
-        num_epochs=100,
-        lr=0.001,
-        schedulerType=Schedulers.COSINE_ANNEALING_LR,
-        scheduler_params={'eta_min':5e-5}
-    )
-    
-    
+
+        models = [
+            ECG_CNN_2D(),
+            ResNet18(),
+            ResNet34(),
+            ViT1(num_classes=5),
+            ViT2(num_classes=5)
+        ]
+        
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        #torch.hub.load('pytorch/vision:v0.10.0', 'resnet18', pretrained=False, num_classes=5)
+        
+        
+        for model in models:
+            
+            optimizer = torch.optim.Adam(model.parameters(), lr=start_lr)
+            scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+                optimizer, T_max=num_epochs, eta_min=2.5e-5
+            )
+            
+            trainer = Trainer(
+                workingDirectory=os.path.join(setting.OUTPUT_PATH, f"seed_{seed}"),
+                datamodule=datamodule,
+                device=device,
+                model=model,
+                optimizer=optimizer,
+                scheduler=scheduler
+            )
+            
+            trainer.train(
+                num_epochs=100,
+                lr=0.0005,
+               
+            )
+            
+            trainer.evaluate_model(
+                #checkpoint_path="C:\\Users\\Utente\\Desktop\\Progetto_DataMining\\SIGNALS\\Data\\Models\\seed_120\\ViT1\\checkpoints\\checkpoint_epoch_95_val_loss_0.0436.pt",
+                ignore_index=-100,
+                unique_labels=[0, 1, 2, 3, 4],
+                label_mapper= lambda idx: ArrhythmiaType.toEnum(idx).__str__()
+                
+            )
+            
+            
+        
+        
     
     
 if __name__ == "__main__":

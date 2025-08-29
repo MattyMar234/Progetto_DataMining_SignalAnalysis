@@ -28,7 +28,9 @@ class DatasetMode(Enum):
     VALIDATION = auto()
     TEST = auto()
     
-
+class SplitMode(Enum):
+    RANDOM = auto()
+    LAST_RECORD = auto()
 
 class ArrhythmiaType(Enum):
     NOR = (0, [100, 105, 215], "NOR")
@@ -41,7 +43,6 @@ class ArrhythmiaType(Enum):
         return self.value[2]
     
     @classmethod
-    @lru_cache(maxsize=1)
     def toList(cls) -> List[Tuple[int, List[int], str]]:
         return list(map(lambda c: c.value, cls))
   
@@ -74,6 +75,8 @@ class MITBIHDataset(Dataset):
     _V3_COL: str = 'V3'
     _V4_COL: str = 'V4'
     _V5_COL: str = 'V5'
+    
+    _COLS = [_MLII_COL, _V1_COL, _V2_COL, _V3_COL, _V4_COL, _V5_COL]
     
     # lista dei record da utilizzare
     _ALL_RECORDS: Final[list] = _RECORDS_MLII_V1 #+ _RECORDS_MLII_V2 + _RECORDS_MLII_V4 + _RECORDS_MLII_V5# + _RECORDS_V5_V2
@@ -117,7 +120,9 @@ class MITBIHDataset(Dataset):
             random_seed: int = 42, 
             SFTF_window_size: int = 512,
             SFTF_hop_length: float = 0.50,
-            use_smote:bool = False
+            use_smote_on_training:bool = False,
+            use_smote_on_validation: bool = False,
+            splitMode: SplitMode = SplitMode.RANDOM,
         ):
         """
         Imposta il percorso del dataset e carica staticamente tutti i dati.
@@ -130,9 +135,11 @@ class MITBIHDataset(Dataset):
             APP_LOGGER.info(f"Il percorso del dataset è già impostato su: {cls._DATASET_PATH}")
             return
         
+        cls.__splitMode = splitMode
         cls.__RANDOM_SEED = random_seed
         cls._DATASET_PATH = path
-        cls.__USE_SMOTE = use_smote
+        cls.__USE_SMOTE_TRAINING = use_smote_on_training
+        cls.__USE_SMOTE_VALIDATION = use_smote_on_validation
         
         #========================================================================#
         # VERIFICO I FILES
@@ -201,7 +208,7 @@ class MITBIHDataset(Dataset):
         # SMOTE
         #========================================================================#
         
-        if use_smote:
+        if cls.__USE_SMOTE_TRAINING:
             APP_LOGGER.info("-"*100)
             APP_LOGGER.info("Applicazione della SMOTE sul dataset di training...")
             cls._TRAIN_DATASET = cls.__apply_smote(cls._TRAIN_DATASET)
@@ -213,7 +220,20 @@ class MITBIHDataset(Dataset):
                 total_smote_samples += smote_samples
                 APP_LOGGER.info(f"- {k}: {len(v)} finestre (di cui {smote_samples} sintetiche)")
             APP_LOGGER.info(f"Totale campioni sintetici aggiunti: {total_smote_samples}")
+        
+        if cls.__USE_SMOTE_VALIDATION:
+            APP_LOGGER.info("-"*100)
+            APP_LOGGER.info("Applicazione della SMOTE sul dataset di validazione...")
+            cls._TEST_DATASET = cls.__apply_smote(cls._TEST_DATASET)
+            APP_LOGGER.info("SMOTE applicata. Nuova distribuzione del validazione set:")
             
+            total_smote_samples = 0
+            for k, v in cls._TEST_DATASET.items():
+                smote_samples = sum(1 for data_dict in v.values() if data_dict['s'])
+                total_smote_samples += smote_samples
+                APP_LOGGER.info(f"- {k}: {len(v)} finestre (di cui {smote_samples} sintetiche)")
+            APP_LOGGER.info(f"Totale campioni sintetici aggiunti: {total_smote_samples}")
+              
         
         #========================================================================#
         # STFT
@@ -246,15 +266,25 @@ class MITBIHDataset(Dataset):
                     # --- Leggi il segnale dal file CSV ---
                     df = pd.read_csv(csv_filepath)
                     
-                    for idx, col in enumerate(df.columns):
-                        df = df.rename(columns={df.columns[idx]: df.columns[idx].replace('\'', '')})
-
-                    # -- leggo la colonna MLII --
-                    signal: torch.Tensor = torch.from_numpy(df[MITBIHDataset._MLII_COL].values)
+                    channels_name = []
                     
-                    #-- normalizzo il segnale --
-                    signal = (signal - MITBIHDataset._MIN_VALUE) / (MITBIHDataset._MAX_VALUE - MITBIHDataset._MIN_VALUE) 
-        
+                    for idx, col in enumerate(df.columns):
+                        rm = df.columns[idx].replace('\'', '')
+                        df = df.rename(columns={df.columns[idx]: rm})
+                        
+                        if rm in MITBIHDataset._COLS:
+                            channels_name.append(rm)
+                    
+                    signals: List[torch.Tensor] = []    
+                    
+                    for channel in channels_name:
+                        #print(channel)
+                        s: torch.Tensor = torch.from_numpy(df[channel].values)
+                        s = (s - MITBIHDataset._MIN_VALUE) / (MITBIHDataset._MAX_VALUE - MITBIHDataset._MIN_VALUE) 
+                        signals.append(s)
+            
+                    signal = torch.stack(signals, dim=0)
+            
                     # -- Salva il segnale per il record corrente --
                     ALL_SIGNALS_DICT[record_name] = signal.float() 
                     #========================================================================#
@@ -280,13 +310,22 @@ class MITBIHDataset(Dataset):
                     progress_bar.set_description(f"{label} - record {record_name}")
                     
                     signal = signals_dict[record_name]
-                    x = signal[offset:(MITBIHDataset._MAX_SAMPLE_NUM-2000+offset)]
-                    chunks = list(torch.split(x, 3600))
-                    atype_records_windows[record_name] = chunks
+                    x = signal[:, offset:(MITBIHDataset._MAX_SAMPLE_NUM-2000+offset)]
+                     # split lungo la dimensione temporale → lista di [N, window_size]
+                    chunks = torch.split(x, window_size, dim=1)
+                    
+                    # rimodello: da lista di [N, window_size] → [num_chunks, N, window_size]
+                    stacked = torch.stack(chunks, dim=0)
+                    
+                    windows_list = windows_list = [w for w in stacked.reshape(-1, window_size)]
+                    atype_records_windows[record_name] = windows_list
                     
                     # print(f"signal: {signal.shape}")
-                    # print(f"chunk: {chunks[0].shape}")
-                    # print(f"chunks: {len(chunks)}")
+                    # print(f"chunks: {chunks[0].shape}")
+                    # print(f"stacked: {stacked.shape}")
+                    # print(f"windows_list: {len(windows_list)}")
+                    # print(f"type: {type(windows_list)}")
+                    # os._exit(0)
                 
                 TYPE_RECORD_WINDOWS[atype] = atype_records_windows
                 progress_bar.update(1)
@@ -316,15 +355,24 @@ class MITBIHDataset(Dataset):
             for record in records_dict.keys():
                 windows.extend(records_dict[record])
               
-            #print(f"{label}: {len(windows)} finestre")  
-            
+            train_tensors, test_tensors = [], []
+              
             #divido le finestre in train e test
-            train_tensors, test_tensors = train_test_split(
-                windows,
-                train_size=train_ratio,
-                test_size=test_ratio,
-                random_state=MITBIHDataset.__RANDOM_SEED
-            )
+            match cls.__splitMode:
+                case SplitMode.RANDOM:
+                    train_tensors, test_tensors = train_test_split(
+                        windows,
+                        train_size=train_ratio,
+                        test_size=test_ratio,
+                        random_state=MITBIHDataset.__RANDOM_SEED
+                    )
+                    
+                # case SplitMode.LAST_RECORD:
+                #     pass
+                
+                case _ :
+                    raise Exception("Invalid dataset splitMode")
+            
                        
             data_dict1: Dict[int, dict] = {}
             data_dict2: Dict[int, dict] = {}
@@ -340,6 +388,9 @@ class MITBIHDataset(Dataset):
     
     @classmethod
     def __apply_smote(cls, dataset: Dict[str, Dict[int, dict]]):
+        
+        import hashlib
+        
         """
         Applica SMOTE per bilanciare il dataset di training.
         
@@ -360,7 +411,7 @@ class MITBIHDataset(Dataset):
             for key_idx, data_dict in windows_dict.items():
                 # Aggiungi l'elemento al mapping
                 all_data.append(data_dict['x1'].numpy().flatten())
-                all_labels.append(data_dict['y'].value[0])
+                all_labels.append(data_dict['y'])
                 
                 # Mappa l'indice originale ai dati, inclusi i metadati
                 original_data_dict[counter] = data_dict
@@ -370,7 +421,7 @@ class MITBIHDataset(Dataset):
         APP_LOGGER.info(f"Distribuzione classi prima di SMOTE: {Counter(all_labels)}")
         
         # 2. Applica SMOTE
-        smote = SMOTE(random_state=cls.__RANDOM_SEED)
+        smote = SMOTE(random_state=cls.__RANDOM_SEED, sampling_strategy={0: 200, 1: 200, 2: 200, 3: 200, 4: 200})
         X_resampled, y_resampled = smote.fit_resample(all_data, all_labels)
         
         APP_LOGGER.info(f"Dimensione dataset dopo SMOTE: {len(X_resampled)}")
@@ -384,7 +435,7 @@ class MITBIHDataset(Dataset):
         
         # Ricostruisci il dizionario per i dati originali
         for i in range(original_size):
-            original_data_dict[i]['x1'] = torch.from_numpy(X_resampled[i]).float()
+            original_data_dict[i]['x1'] = torch.from_numpy(np.array(X_resampled[i])).float()
             
             # Recupera il tipo di aritmia corretto
             arr_type_label = ArrhythmiaType.toEnum(y_resampled[i]).value[2]
