@@ -532,7 +532,13 @@ class Trainer:
             APP_LOGGER.info(f"Utilizzo del miglior checkpoint disponibile: {checkpoint_path}")
         
         # Crea una cartella per questa valutazione specifica
+        
         eval_dir = os.path.join(self._evaluationPath, name)
+        
+        if os.path.exists(eval_dir):
+            APP_LOGGER.info(f"valutazione già presente il modello {self._model.__class__.__name__}")
+            return {}
+        
         os.makedirs(eval_dir, exist_ok=True)
         
         # Carica il checkpoint

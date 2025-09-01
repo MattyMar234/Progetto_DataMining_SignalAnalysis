@@ -229,8 +229,8 @@ class ViT1(VisionTransformer1):
             in_channels, 
             num_classes, 
             embed_dim=256, 
-            depth=3, 
-            n_heads=16, 
+            depth=6, 
+            n_heads=4, 
             mlp_ratio=3, 
             norm_first = True, 
             dropout = 0.1

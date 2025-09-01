@@ -22,7 +22,7 @@ import setting
 from trainer import Trainer
 
 from dataset.datamodule import Mitbih_datamodule
-from dataset.dataset import ArrhythmiaType
+from dataset.dataset import ArrhythmiaType, SplitMode
 
 
 def check_pytorch_cuda() -> bool:
@@ -73,75 +73,98 @@ def main():
         transforms.RandomHorizontalFlip(p=0.5),
     ])
     
-    seeds: list = [48**i for i in range(1,4)]
+    modes = [ SplitMode.LAST_RECORD]#SplitMode.RANDOM,
+    
+    
     start_lr:float = 0.005
     num_epochs = 100
-
-    for seed in seeds:
-
-        datamodule = Mitbih_datamodule(
-            datasetFolder=r"C:\Users\Utente\Desktop\Progetto_DataMining\Dataset\mitbih_database", 
-            batch_size=150, 
-            num_workers=5,
-            pin_memory=True,
-            persistent_workers=True,
-            prefetch_factor=2,
-            training_transform_pipe = train_transforms,
-            validation_transform_pipe = None,
-            random_seed=seed,
-            use_smote_on_validation=True
-        )
-        
-        # print(f"training size: {len(datamodule.get_train_dataset())}")
-        # print(f"validation size: {len(datamodule.get_val_dataset())}")
-        # print(f"Test size: {len(datamodule.get_test_dataset())}")
+    seeds:list = []
     
+    models = [
+        ECG_CNN_2D(),
+        ResNet18(),
+        ResNet34(),
+        ViT1(num_classes=5),
+        ViT2(num_classes=5)
+    ]
+        
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    #torch.hub.load('pytorch/vision:v0.10.0', 'resnet18', pretrained=False, num_classes=5)
     
 
-        models = [
-            ECG_CNN_2D(),
-            ResNet18(),
-            ResNet34(),
-            ViT1(num_classes=5),
-            ViT2(num_classes=5)
-        ]
+    for mode in modes:
         
-        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        #torch.hub.load('pytorch/vision:v0.10.0', 'resnet18', pretrained=False, num_classes=5)
-        
-        
-        for model in models:
+        match mode:
+            case SplitMode.RANDOM:
+                seeds = [48**i for i in range(1,4)]
+            case _ :
+                seeds = [48]
             
-            optimizer = torch.optim.Adam(model.parameters(), lr=start_lr)
-            scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
-                optimizer, T_max=num_epochs, eta_min=2.5e-5
+        for seed in seeds:
+
+            datamodule = Mitbih_datamodule(
+                datasetFolder=r"C:\Users\Utente\Desktop\Progetto_DataMining\Dataset\mitbih_database", 
+                batch_size=150, 
+                num_workers=5,
+                pin_memory=True,
+                persistent_workers=True,
+                prefetch_factor=2,
+                training_transform_pipe = train_transforms,
+                validation_transform_pipe = None,
+                random_seed=seed,
+                use_smote_on_validation=True,
+                splitMode=mode
             )
             
-            trainer = Trainer(
-                workingDirectory=os.path.join(setting.OUTPUT_PATH, f"seed_{seed}"),
-                datamodule=datamodule,
-                device=device,
-                model=model,
-                optimizer=optimizer,
-                scheduler=scheduler
-            )
+            # print(f"training size: {len(datamodule.get_train_dataset())}")
+            # print(f"validation size: {len(datamodule.get_val_dataset())}")
+            # print(f"Test size: {len(datamodule.get_test_dataset())}")
+        
+        
+
+           
             
-            trainer.train(
-                num_epochs=100,
-                lr=0.0005,
-               
-            )
-            
-            trainer.evaluate_model(
-                #checkpoint_path="C:\\Users\\Utente\\Desktop\\Progetto_DataMining\\SIGNALS\\Data\\Models\\seed_120\\ViT1\\checkpoints\\checkpoint_epoch_95_val_loss_0.0436.pt",
-                ignore_index=-100,
-                unique_labels=[0, 1, 2, 3, 4],
-                label_mapper= lambda idx: ArrhythmiaType.toEnum(idx).__str__()
+            for model in models:
                 
-            )
+                optimizer = torch.optim.Adam(model.parameters(), lr=start_lr)
+                scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+                    optimizer, T_max=num_epochs, eta_min=2.5e-5
+                )
+                
+                trainer = Trainer(
+                    workingDirectory=os.path.join(setting.OUTPUT_PATH, mode.value, f"seed_{seed}"),
+                    datamodule=datamodule,
+                    device=device,
+                    model=model,
+                    optimizer=optimizer,
+                    scheduler=scheduler
+                )
+                
+                setting.APP_LOGGER.info(f"TRAINING {model.__class__.__name__}")
+                
+                trainer.train(
+                    num_epochs=100,
+                    lr=0.0005,
+                
+                )
+                
+                try:
+                    
+                    setting.APP_LOGGER.info(f"TESTING {model.__class__.__name__}")
+                    
+                    trainer.evaluate_model(
+                        #checkpoint_path="C:\\Users\\Utente\\Desktop\\Progetto_DataMining\\SIGNALS\\Data\\Models\\seed_120\\ViT1\\checkpoints\\checkpoint_epoch_95_val_loss_0.0436.pt",
+                        ignore_index=-100,
+                        unique_labels=[0, 1, 2, 3, 4],
+                        label_mapper= lambda idx: ArrhythmiaType.toEnum(idx).__str__()
+                        
+                    )
+                    
+                except Exception as e:
+                    print(e)
+                
+                
             
-            
-        
         
     
     

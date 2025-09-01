@@ -29,8 +29,9 @@ class DatasetMode(Enum):
     TEST = auto()
     
 class SplitMode(Enum):
-    RANDOM = auto()
-    LAST_RECORD = auto()
+    RANDOM = "mode_random"
+    LAST_RECORD = "mode_record"
+    
 
 class ArrhythmiaType(Enum):
     NOR = (0, [100, 105, 215], "NOR")
@@ -342,33 +343,39 @@ class MITBIHDataset(Dataset):
         test_dict_windows:  Dict[str, Dict[int, dict]] = {}
         
         #per ogni tipologia di aritmia
-        for (atype, _, label) in ArrhythmiaType.toList():
+        for (atype, record_list, label) in ArrhythmiaType.toList():
             windows: list = []
+            train_tensors, test_tensors = [], []
             
             #ottengo i record di quella tipologia
             records_dict = type_Record_Dict[atype]
             
-            
-            
-            #per ogni record prendo le sue finestre e realizzo
-            #una lista unica di finestre per la tipologia
-            for record in records_dict.keys():
-                windows.extend(records_dict[record])
-              
-            train_tensors, test_tensors = [], []
-              
+               
             #divido le finestre in train e test
             match cls.__splitMode:
                 case SplitMode.RANDOM:
+                    
+                    #per ogni record prendo le sue finestre e realizzo
+                    #una lista unica di finestre per la tipologia
+                    for record in records_dict.keys():
+                        windows.extend(records_dict[record])
+                    
                     train_tensors, test_tensors = train_test_split(
                         windows,
                         train_size=train_ratio,
                         test_size=test_ratio,
                         random_state=MITBIHDataset.__RANDOM_SEED
                     )
+                
+                case SplitMode.LAST_RECORD:
+                    train_records = record_list[0:-1]
+                    test_record = record_list[-1]
                     
-                # case SplitMode.LAST_RECORD:
-                #     pass
+                    for record in train_records:
+                        train_tensors.extend(records_dict[record])
+                    
+                    test_tensors.extend(records_dict[test_record])
+                
                 
                 case _ :
                     raise Exception("Invalid dataset splitMode")
