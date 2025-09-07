@@ -62,9 +62,10 @@ def main():
     
     check_pytorch_cuda()
     
-    from nn_models.ECG_CNN import ECG_CNN_2D
+    from nn_models.ECG_CNN import ECG_CNN_2D, ECG_CNN_1D
     from nn_models.resnet import ResNet18,ResNet34
-    from nn_models.visionTransformer import ViT1,ViT2
+    from nn_models.resent_1D import ResNet18_1D, ResNet34_1D
+    from nn_models.visionTransformer import ViT1,ViT2,ViT1_1D
     from nn_models.segFormer import SegFormer
     from trainer import Schedulers
     
@@ -73,7 +74,7 @@ def main():
         transforms.RandomHorizontalFlip(p=0.5),
     ])
     
-    modes = [ SplitMode.LAST_RECORD]#SplitMode.RANDOM,
+    modes = [SplitMode.RANDOM]#,SplitMode.LAST_RECORD],
     
     
     start_lr:float = 0.005
@@ -81,11 +82,15 @@ def main():
     seeds:list = []
     
     models = [
-        ECG_CNN_2D(),
-        ResNet18(),
-        ResNet34(),
-        ViT1(num_classes=5),
-        ViT2(num_classes=5)
+        # ECG_CNN_2D(),
+        # ResNet18(),
+        # ResNet34(),
+        # ViT1(num_classes=5),
+        #(ViT2(num_classes=5), "x2"),
+        #(ECG_CNN_1D(), "x1"),
+        #(ResNet18_1D(num_classes=5), "x1")
+        #(ResNet34_1D(num_classes=5), "x1")
+        (ViT1_1D(), "x1")
     ]
         
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -120,11 +125,12 @@ def main():
             # print(f"validation size: {len(datamodule.get_val_dataset())}")
             # print(f"Test size: {len(datamodule.get_test_dataset())}")
         
+            #print(f"x1 shape: {datamodule.get_train_dataset()[0]['x1'].shape}")
         
 
            
             
-            for model in models:
+            for model, x_type in models:
                 
                 optimizer = torch.optim.Adam(model.parameters(), lr=start_lr)
                 scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
@@ -137,7 +143,8 @@ def main():
                     device=device,
                     model=model,
                     optimizer=optimizer,
-                    scheduler=scheduler
+                    scheduler=scheduler,
+                    dataType = x_type
                 )
                 
                 setting.APP_LOGGER.info(f"TRAINING {model.__class__.__name__}")

@@ -3,3 +3,4 @@ linux: source .venv/bin/activate | windows: .venv\Scripts\Activate
 
 uv pip install -r
 
+python SIGNALS/src/main.py

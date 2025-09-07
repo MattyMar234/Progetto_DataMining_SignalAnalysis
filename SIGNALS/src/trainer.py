@@ -80,7 +80,8 @@ class Trainer:
             model: torch.nn.Module, 
             optimizer: torch.optim.Optimizer | None = None,
             scheduler: Any | None = None,
-            top_k_checkpoints: int = 3
+            top_k_checkpoints: int = 3,
+            dataType: str = 'x2'
         ) -> None:
         """
         Inizializza il Trainer con un datamodule.
@@ -110,6 +111,7 @@ class Trainer:
         self._trainingDataPath = os.path.join(self._workingDirectory, 'training_data')
         self._evaluationPath = os.path.join(self._workingDirectory, 'evaluation')
         
+        self._dataType = dataType
         self._dataModule = datamodule
         self._device = device
         self._model = model
@@ -365,7 +367,7 @@ class Trainer:
                     # )
                     
                     for data in train_loader:
-                        x = data['x2'].to(self._device)
+                        x = data[self._dataType].to(self._device)
                         y = data['y'].to(self._device)
                         
                         self._optimizer.zero_grad()
@@ -418,7 +420,7 @@ class Trainer:
                     
                     with torch.no_grad():
                         for data in val_loader:
-                            x = data['x2'].to(self._device)
+                            x = data[self._dataType].to(self._device)
                             y = data['y'].to(self._device)
                             y_hat = self._model(x)
                             loss = criterion(y_hat, y)
@@ -556,7 +558,7 @@ class Trainer:
         # Valutazione del modello
         with torch.no_grad(): 
             for batch in tqdm(test_dataloader, desc=f"Valutazione {name}"): 
-                x = batch['x2'].to(self._device)
+                x = batch[self._dataType].to(self._device)
                 y = batch['y'].to(self._device)
                
                 # Ottieni le predizioni
