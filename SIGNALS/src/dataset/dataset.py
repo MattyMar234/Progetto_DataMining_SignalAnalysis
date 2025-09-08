@@ -471,42 +471,25 @@ class MITBIHDataset(Dataset):
    
     @classmethod
     def __makeSpectrogram(cls, window_size: int, hop_length: float, signal_len: int = 3600) -> None:
-        
         window = np.hanning(window_size)
         hop_size = int(window_size * hop_length)
-        num_frames = 1 + (3600 - window_size) // hop_size
-        
-        # Barra esterna per i dataset
-        dataset_bar = tqdm(total=2, desc="Dataset", position=0)
+        num_frames = 1 + (signal_len - window_size) // hop_size
 
-        # Barra type
-        type_bar = tqdm(total=5, desc="Type", position=1)
+        # Conta totale di finestre da processare
+        total_items = sum(
+            len(windows_dict.items())
+            for dataset in [cls._TRAIN_DATASET, cls._TEST_DATASET]
+            for _, windows_dict in dataset.items()
+        )
 
-        # Barra per le finestre (0-100 percento)
-        frame_bar = tqdm(total=100, desc="Frames %", position=2)
-        
+        # Barra unica
+        progress_bar = tqdm(total=total_items, desc="Generazione spettrogrammi", position=0)
+
         try:
             for (dataset, dataset_name) in zip([cls._TRAIN_DATASET, cls._TEST_DATASET], ["Train", "Test"]):
-                dataset_bar.update(1)
-                str_ = f"{dataset_name} Dataset"
-                dataset_bar.set_description(f"{str_:<17}")
-                dataset_bar.refresh() 
-                
-                type_bar.n = 0
-                type_bar.refresh()
                 for atype, windows_dict in dataset.items():
-                    str_ = f"Type: {atype}"
-                    type_bar.set_description(f"{str_:<17}")
-                    
-                    elements = len(windows_dict.items())
-                    frame_bar.n = 0
-                    frame_bar.refresh()
-                
-                    for (idx,(key_idx, data)) in enumerate(windows_dict.items()):
-                        str_ = f"window: {idx+1}" 
-                        frame_bar.set_description(f"{str_:<17}")
-                        frame_bar.refresh()
-
+                    for (idx, (key_idx, data)) in enumerate(windows_dict.items()):
+                        
                         signal_tensor = data["x1"]
                         signal_np = signal_tensor.numpy().squeeze()
                         
@@ -517,49 +500,140 @@ class MITBIHDataset(Dataset):
                             end = start + window_size
                             frame = signal_np[start:end] * window
                             
-                            # FFT solo fino a Nyquist
-                            #ho 512/2+1 = 257 valori. Ogni passo corrisponde a 360/512 = 0.703125 Hz
+                            # FFT fino a Nyquist
                             spectrum = np.fft.rfft(frame)  
                             stft_matrix[:, i] = spectrum[0:-1]
 
-                        # Magnitudo dello spettrogramma. abs => modulo complesso
+                        # Magnitudo e log
                         spectrogram = np.abs(stft_matrix)**2
                         spectrogram_db = np.log10(spectrogram + 1e-8)
                 
-            
                         # Resize a 256x256
-                        spectrogram_resized = resize(spectrogram_db, (256, 256), mode='reflect', anti_aliasing=True)
-            
-                         # ======================================================================== #
-                        # NORMALIZZAZIONE tra 0 e 1
-                        # ======================================================================== #
+                        spectrogram_resized = resize(
+                            spectrogram_db, (256, 256), 
+                            mode='reflect', anti_aliasing=True
+                        )
+
+                        # Normalizzazione 0-1
                         min_val = np.min(spectrogram_resized)
                         max_val = np.max(spectrogram_resized)
                         
-                        # Previene la divisione per zero se max_val e min_val sono uguali
+                        data["x3"] = torch.tensor(
+                            spectrogram_resized, dtype=torch.float32
+                        ).unsqueeze(0)
+                        
                         if max_val > min_val:
                             spectrogram_normalized = (spectrogram_resized - min_val) / (max_val - min_val)
                         else:
-                            # Se tutti i valori sono uguali, lo spettrogramma normalizzato sarà tutto a 0
                             spectrogram_normalized = np.zeros_like(spectrogram_resized)
 
-                        # Salva lo spettrogramma normalizzato
-                        data["x2"] = torch.tensor(spectrogram_normalized, dtype=torch.float32).unsqueeze(0)
+                        # Salva spettrogramma normalizzato
+                        data["x2"] = torch.tensor(
+                            spectrogram_normalized, dtype=torch.float32
+                        ).unsqueeze(0)
                         
-            
-                        #data["x2"] = torch.tensor(spectrogram_resized, dtype=torch.float32).unsqueeze(0)
-            
-                        # update percentuale
-                        perc = int((idx + 1) / elements * 100)
-                        frame_bar.n = perc
-                        frame_bar.refresh()
+                       
                         
-                    type_bar.update(1)
-                    type_bar.refresh() 
+                        data["x2_range"] = (min_val, max_val)
+
+                        # Aggiorna barra
+                        progress_bar.update(1)
+
         finally:
-            dataset_bar.close()
-            type_bar.close()
-            frame_bar.close()         
+            progress_bar.close()
+
+    
+    
+    # def __makeSpectrogram(cls, window_size: int, hop_length: float, signal_len: int = 3600) -> None:
+        
+    #     window = np.hanning(window_size)
+    #     hop_size = int(window_size * hop_length)
+    #     num_frames = 1 + (3600 - window_size) // hop_size
+        
+    #     # Barra esterna per i dataset
+    #     dataset_bar = tqdm(total=2, desc="Dataset", position=0)
+
+    #     # Barra type
+    #     type_bar = tqdm(total=5, desc="Type", position=1)
+
+    #     # Barra per le finestre (0-100 percento)
+    #     frame_bar = tqdm(total=100, desc="Frames %", position=2)
+        
+    #     try:
+    #         for (dataset, dataset_name) in zip([cls._TRAIN_DATASET, cls._TEST_DATASET], ["Train", "Test"]):
+    #             dataset_bar.update(1)
+    #             str_ = f"{dataset_name} Dataset"
+    #             dataset_bar.set_description(f"{str_:<17}")
+    #             dataset_bar.refresh() 
+                
+    #             type_bar.n = 0
+    #             type_bar.refresh()
+    #             for atype, windows_dict in dataset.items():
+    #                 str_ = f"Type: {atype}"
+    #                 type_bar.set_description(f"{str_:<17}")
+                    
+    #                 elements = len(windows_dict.items())
+    #                 frame_bar.n = 0
+    #                 frame_bar.refresh()
+                
+    #                 for (idx,(key_idx, data)) in enumerate(windows_dict.items()):
+    #                     str_ = f"window: {idx+1}" 
+    #                     frame_bar.set_description(f"{str_:<17}")
+    #                     frame_bar.refresh()
+
+    #                     signal_tensor = data["x1"]
+    #                     signal_np = signal_tensor.numpy().squeeze()
+                        
+    #                     stft_matrix = np.zeros((window_size // 2, num_frames), dtype=np.complex64)
+
+    #                     for i in range(num_frames):
+    #                         start = i * hop_size
+    #                         end = start + window_size
+    #                         frame = signal_np[start:end] * window
+                            
+    #                         # FFT solo fino a Nyquist
+    #                         #ho 512/2+1 = 257 valori. Ogni passo corrisponde a 360/512 = 0.703125 Hz
+    #                         spectrum = np.fft.rfft(frame)  
+    #                         stft_matrix[:, i] = spectrum[0:-1]
+
+    #                     # Magnitudo dello spettrogramma. abs => modulo complesso
+    #                     spectrogram = np.abs(stft_matrix)**2
+    #                     spectrogram_db = np.log10(spectrogram + 1e-8)
+                
+            
+    #                     # Resize a 256x256
+    #                     spectrogram_resized = resize(spectrogram_db, (256, 256), mode='reflect', anti_aliasing=True)
+            
+    #                      # ======================================================================== #
+    #                     # NORMALIZZAZIONE tra 0 e 1
+    #                     # ======================================================================== #
+    #                     min_val = np.min(spectrogram_resized)
+    #                     max_val = np.max(spectrogram_resized)
+                        
+    #                     # Previene la divisione per zero se max_val e min_val sono uguali
+    #                     if max_val > min_val:
+    #                         spectrogram_normalized = (spectrogram_resized - min_val) / (max_val - min_val)
+    #                     else:
+    #                         # Se tutti i valori sono uguali, lo spettrogramma normalizzato sarà tutto a 0
+    #                         spectrogram_normalized = np.zeros_like(spectrogram_resized)
+
+    #                     # Salva lo spettrogramma normalizzato
+    #                     data["x2"] = torch.tensor(spectrogram_normalized, dtype=torch.float32).unsqueeze(0)
+                        
+            
+    #                     #data["x2"] = torch.tensor(spectrogram_resized, dtype=torch.float32).unsqueeze(0)
+            
+    #                     # update percentuale
+    #                     perc = int((idx + 1) / elements * 100)
+    #                     frame_bar.n = perc
+    #                     frame_bar.refresh()
+                        
+    #                 type_bar.update(1)
+    #                 type_bar.refresh() 
+    #     finally:
+    #         dataset_bar.close()
+    #         type_bar.close()
+    #         frame_bar.close()         
         
         
         
@@ -654,7 +728,7 @@ class MITBIHDataset(Dataset):
         # Estrai i dati per l'indice specificato
         data_point = self.__index_mapping[index]
         signal = data_point['x1']
-        spectrogram = data_point['x2']
+        spectrogram = data_point['x3']
         label = data_point['y']
         is_synthetic = data_point['s']
         
@@ -692,262 +766,57 @@ class MITBIHDataset(Dataset):
         plt.tight_layout(rect=[0, 0, 1, 0.96]) # Regola il layout per il titolo
         plt.show()
 
-    # def __load_data_for_Beat_classification(self, indices: List[int]):
-    #     indices = sorted(indices)
+    # def show_sample_spectrogram(self, index: int):
+    #     """
+    #     Mostra il segnale del dataset e il relativo spettrogramma in dB (non normalizzato)
+    #     per un dato indice. I due grafici sono visualizzati in un'unica finestra.
+    #     """
+    #     if index >= len(self.__index_mapping) or index < 0:
+    #         raise IndexError(f"Indice fuori range. L'indice deve essere compreso tra 0 e {len(self.__index_mapping) - 1}.")
         
-    #     idx: int = 0
-    #     counter: int = 0
-    #     window_counter: int = 0
-    #     done: bool = False
+    #     # Estrai i dati per l'indice specificato
+    #     data_point = self.__index_mapping[index]
+    #     signal = data_point['x1']
+    #     spectrogram_norm = data_point['x2']   # spettrogramma normalizzato (0–1)
+    #     label = data_point['y']
+    #     is_synthetic = data_point['s']
+    #     min_val, max_val = data_point.get("x2_range", (0, 1))  # range log originale
         
-    #     progress_bar = tqdm(total=len(indices))
+    #     # Verifica che i dati siano disponibili
+    #     if signal is None or spectrogram_norm is None:
+    #         raise ValueError("I dati del segnale o dello spettrogramma non sono disponibili per questo indice. Assicurati che il dataset sia stato inizializzato correttamente.")
+            
+    #     # Converti i dati da PyTorch a NumPy per il plotting
+    #     signal_np = signal.squeeze().numpy()
+    #     spectrogram_norm_np = spectrogram_norm.squeeze().numpy()
         
-    #     dataDict: Dict[BeatType, List[torch.Tensor]] = {}
+    #     # ❌ annulla la normalizzazione 0–1 → recupera spettrogramma in dB
+    #     spectrogram_db = spectrogram_norm_np * (max_val - min_val) + min_val
         
-    #     try:
-    #         for record_name in MITBIHDataset._ALL_RECORDS:
-    #             progress_bar.set_description(f"record {record_name}")
-                
-    #             if done:  break
-                
-    #             annotations = MITBIHDataset._ALL_SIGNALS_BEAT_ANNOTATIONS_DICT[record_name]
-    #             signal = MITBIHDataset._ALL_SIGNALS_DICT[record_name]
-                
-                
-    #             for annotation in annotations:
-                    
-    #                 #se ho preso tutti gli elementi
-    #                 if idx >= len(indices):
-    #                     done=True
-    #                     break
-                    
-    #                 #se non ho ancora raggiugnto l'indice dell'elemento da utilizzare
-    #                 elif indices[idx] > counter:
-    #                     counter += 1
-    #                     continue
-                    
-    #                 #se h oraggiugnto l'indice dell'elemeneto da utilizzare
-    #                 elif indices[idx] == counter:
-    #                     progress_bar.update(1)
-    #                     counter += 1
-    #                     idx+=1
-                        
-                    
-                    
-    #                 beat_type = annotation["annotation"]
-    #                 sample_pos = annotation["sample_pos"]
-    #                 #time = annotation["time"]
-                    
-    #                 #Verifico il tipo di annotazione
-    #                 if not BeatType.isBeat(beat_type):
-    #                     continue
-                    
-    #                 start = sample_pos - int(self._samples_per_window / 2)
-    #                 end = sample_pos + int(self._samples_per_window / 2)
-
-
-    #                 #ignoro il campione se non ci sta nella finestra
-    #                 # if start < 0 or end >= MITBIHDataset._MAX_SAMPLE_NUM:
-    #                 #     continue
-                    
-    #                 if start < 0:
-    #                     offset = abs(start)
-    #                     start = 0
-    #                     end = end + offset
-                    
-    #                 if end > MITBIHDataset._MAX_SAMPLE_NUM - 1:
-    #                     offset = end - (MITBIHDataset._MAX_SAMPLE_NUM -1)
-    #                     end = MITBIHDataset._MAX_SAMPLE_NUM -1
-    #                     start = start - offset
-                      
-    #                 # # Extract and pad signal fragment
-    #                 signal_fragment = signal[:, start:end]
-                    
-    #                 if dataDict.get(beat_type) is None:
-    #                     dataDict[beat_type] = [signal_fragment]
-    #                 else:
-    #                     dataDict[beat_type].append(signal_fragment)
-                    
-    #     finally:
-    #         progress_bar.close()  
-            
-    #     APP_LOGGER.info("Valori di ogni classe:")
-    #     for beat_type, signals in dataDict.items():
-    #         APP_LOGGER.info(f"{beat_type.value[0]}: {len(signals)} segnali")
+    #     # Crea una figura con due sottotracciati
+    #     fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(10, 8))
         
-    #     if self._mode == DatasetMode.TRAINING and MITBIHDataset.__USE_SMOTE:
-    #         APP_LOGGER.info(f"Applicazione della SMOTE")   
-            
-            
-    #         X = []
-    #         y = []
-            
-    #         threshold = 2
-    #         ignored_x = []
-    #         ignored_y = []
-    #         classNumber:dict = {}
-            
-    #         hash_dict: dict = {}
-            
+    #     # Titolo generale
+    #     synthetic_text = " (sintetico)" if is_synthetic else ""
+    #     fig.suptitle(f"Sample {index} - Categoria: {ArrhythmiaType.toEnum(label)}{synthetic_text}", fontsize=16)
+        
+    #     # Plot del segnale
+    #     ax1.plot(signal_np, color="red")
+    #     ax1.set_title("Segnale ECG")
+    #     ax1.set_xlabel("Campioni")
+    #     ax1.set_ylabel("Ampiezza Normalizzata")
+    #     ax1.grid(True)
+        
+    #     # Plot dello spettrogramma in scala logaritmica (dB)
+    #     im = ax2.imshow(spectrogram_db, aspect='auto', origin='lower', cmap='inferno')
+    #     ax2.set_title("Spettrogramma (dB)")
+    #     ax2.set_xlabel("Frame")
+    #     ax2.set_ylabel("Frequenza (bin)")
+        
+    #     # Aggiungi colorbar con scala dB
+    #     cbar = fig.colorbar(im, ax=ax2)
+    #     cbar.set_label("Intensità (dB)")
+        
+    #     plt.tight_layout(rect=[0, 0, 1, 0.96]) # Regola il layout per il titolo
+    #     plt.show()
 
-    #         for beat_type, signals in dataDict.items():
-                
-                
-                
-    #             if len(signals) < threshold:
-    #                 APP_LOGGER.warning(f"Tipo di battito {beat_type.value[0]} ha meno di {threshold} segnali, ignorato per la SMOTE")
-    #                 for signal in signals:
-    #                     ignored_x.append(signal)
-    #                     ignored_y.append(beat_type)  # Usa il valore numerico del BeatType
-    #             else:
-    #                 classNumber[beat_type.value[1]] = len(signals)
-    #                 for signal in signals:
-    #                     tensor_hash = hashlib.sha256(signal.numpy().tobytes()).hexdigest()
-    #                     hash_dict[tensor_hash] = True
-    #                     X.append(signal.reshape(-1).numpy())  
-    #                     y.append(beat_type.value[1])          
-                  
-    #         X = np.stack(X)  # shape: (n_samples, 560)
-    #         y = np.array(y)  # shape: (n_samples,)            
-                        
-    #         sampling_strategy = {
-    #             k: v if (v > 15_000 or k == 0) else (v*200 if v <= 100 else (v*14 if v < 500 else (v*8 if v < 1000 else v*4)))
-    #             for k, v in classNumber.items()
-    #         }
-            
-    #         APP_LOGGER.info('-'*100)
-    #         APP_LOGGER.info("Esecuzione della SMOTE...")
-    #         APP_LOGGER.info(sampling_strategy)
-    #         smote = SMOTE(sampling_strategy=sampling_strategy, random_state=MITBIHDataset.__RANDOM_SEED, k_neighbors=1)    
-    #         X_res, y_res = smote.fit_resample(X, y)
-    #         APP_LOGGER.info('-'*100)
-            
-    #         APP_LOGGER.info("Dati dopo la SMOTE:")
-    #         for beat_type in BeatType:
-    #             if BeatType.isBeat(beat_type):
-    #                 count = np.sum(y_res == beat_type.value[1])
-    #                 APP_LOGGER.info(f"{beat_type.value[0]}: {count} segnali")
-            
-    #         X_res = X_res.reshape(-1, 2, 280)  # ripristino della forma originale
-            
-            
-            
-    #         for xi, yi in zip(X_res, y_res):
-    #             beat_type = BeatType.tokenize(int(yi))
-    #             tensor_signal = torch.tensor(xi).view(self._channels.value, 280)
-                
-    #             tensor_hash = hashlib.sha256(tensor_signal.numpy().tobytes()).hexdigest()
-               
-    #             if len(tensor_signal.shape) == 1:
-    #                 tensor_signal = tensor_signal.unsqueeze(dim=0)
-               
-    #             self._windows[window_counter] = {
-    #                 'signal_fragment' : tensor_signal,
-    #                 'beatType': beat_type,
-    #                 'class' : torch.tensor([yi], dtype=torch.long),
-    #                 'category': torch.tensor([BeatType.getBeatCategory(beat_type)], dtype=torch.long),
-    #                 'syntetic': False if hash_dict.get(tensor_hash) != None and hash_dict[tensor_hash] == True else True,
-    #                 #'record_name': record_name,
-    #             }
-    #             window_counter += 1
-                
-    #         for tensor_signal, beat_type in zip(ignored_x, ignored_y):
-                
-    #             self._windows[window_counter] = {
-    #                 'signal_fragment' : tensor_signal,
-    #                 'beatType': beat_type,
-    #                 'class' : torch.tensor([BeatType.getBeatClass(beat_type)], dtype=torch.long),
-    #                 'category': torch.tensor([BeatType.getBeatCategory(beat_type)], dtype=torch.long),
-    #                 'syntetic': False,
-    #                 #'record_name': record_name,
-    #             }
-                
-    #             window_counter += 1
-    #     else:
-    #         # for beat_type, signals in dataDict.items():
-    #         #     for signal in signals:
-    #         #         self._windows[window_counter] = {
-    #         #             'signal_fragment' : signal,
-    #         #             'beatType': beat_type,
-    #         #             'class' : torch.tensor([BeatType.getBeatClass(beat_type)], dtype=torch.long),
-    #         #             'category': torch.tensor([BeatType.getBeatCategory(beat_type)], dtype=torch.long),
-    #         #             #'record_name': record_name,
-    #         #         }
-    #         #         window_counter += 1
-    #         temp_list = []
-    #         for beat_type, signals in dataDict.items():
-    #             for signal in signals:
-    #                 temp_list.append({
-    #                     'signal_fragment': signal,
-    #                     'beatType': beat_type,
-    #                     'class': torch.tensor([BeatType.getBeatClass(beat_type)], dtype=torch.long),
-    #                     'category': torch.tensor([BeatType.getBeatCategory(beat_type)], dtype=torch.long),
-    #                     'syntetic': False,
-    #                     # 'record_name': record_name,
-    #                 })
-
-    #         # Shuffle dell'intera lista
-    #         random.shuffle(temp_list)
-            
-    #         # Ricopia nella struttura self._windows con nuovo ordine casuale
-    #         for window_counter, item in enumerate(temp_list):
-    #             self._windows[window_counter] = item
-      
-    #     #APP_LOGGER.info(f"Finestre create: {len(self._windows.keys())}")
-    #     APP_LOGGER.info(f"Finestre create: {window_counter}")
-            
-          
-    #     # Calcolo dei pesi delle classi
-    #     if self._mode == DatasetMode.TRAINING:
-    #         APP_LOGGER.info("-"*100)
-    #         APP_LOGGER.info("Calcolo dei pesi")
-    #         classes_number: Dict[int, int] = {}
-            
-    #         all_classes = [self._windows[i]['class'].item() for i in self._windows]
-    #         all_classes = sorted(all_classes)
-            
-    #         for n in all_classes:
-    #             if classes_number.get(n) is None:
-    #                 classes_number[n] = 1
-    #             else:
-    #                 classes_number[n] += 1
-                    
-    #         for k, v in classes_number.items():
-    #             p = v/len(all_classes) * 100
-    #             APP_LOGGER.info(f"Classe {k} ({p:.4f}%): {v}")
-            
-    #         unique_classes = np.unique(all_classes)
-    #         class_weights = compute_class_weight(class_weight='balanced', classes=unique_classes, y=all_classes)
-    #         self._class_weights = torch.tensor(class_weights, dtype=torch.float32)
-            
-    #         categories_number: Dict[int, int] = {}
-    #         all_categories = [self._windows[i]['category'].item() for i in self._windows]
-    #         all_categories = sorted(all_categories)
-            
-    #         for n in all_categories:
-    #             if categories_number.get(n) is None:
-    #                 categories_number[n] = 1
-    #             else:
-    #                 categories_number[n] += 1
-                    
-    #         for k, v in categories_number.items():
-    #             p = v/len(all_categories) * 100
-    #             APP_LOGGER.info(f"Categoria {k} ({p:.4f}%): {v}")
-            
-    #         unique_caregories = np.unique(all_categories)
-            
-            
-            
-    #         class_weights = compute_class_weight(class_weight='balanced', classes=unique_caregories, y=all_categories)
-    #         self._category_weights = torch.tensor(class_weights, dtype=torch.float32)
-            
-    #         APP_LOGGER.info(f"Classi trovate: {unique_classes}")
-    #         APP_LOGGER.info(f"Catregorie trovate: {unique_caregories}")
-    #         APP_LOGGER.info(f"Pesi delle classi calcolati:\n{self._class_weights}")
-    #         APP_LOGGER.info(f"Pesi delle categorie calcolati:\n{self._category_weights}")
-    
-    
-
-
-
-    
