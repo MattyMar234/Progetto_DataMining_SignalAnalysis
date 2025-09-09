@@ -500,18 +500,18 @@ class MITBIHDataset(Dataset):
                             end = start + window_size
                             frame = signal_np[start:end] * window
                             
-                            # FFT fino a Nyquist
+                            
                             spectrum = np.fft.rfft(frame)  
                             stft_matrix[:, i] = spectrum[0:-1]
 
                         # Magnitudo e log
-                        spectrogram = np.abs(stft_matrix)**2
-                        spectrogram_db = np.log10(spectrogram + 1e-8)
+                        spectrogram = np.abs(stft_matrix)
+                        spectrogram_db = 20*np.log10(spectrogram + 1e-8)
                 
                         # Resize a 256x256
                         spectrogram_resized = resize(
                             spectrogram_db, (256, 256), 
-                            mode='reflect', anti_aliasing=True
+                            mode='reflect'
                         )
 
                         # Normalizzazione 0-1
@@ -519,7 +519,7 @@ class MITBIHDataset(Dataset):
                         max_val = np.max(spectrogram_resized)
                         
                         data["x3"] = torch.tensor(
-                            spectrogram_resized, dtype=torch.float32
+                            spectrogram_db, dtype=torch.float32
                         ).unsqueeze(0)
                         
                         if max_val > min_val:
@@ -535,6 +535,7 @@ class MITBIHDataset(Dataset):
                        
                         
                         data["x2_range"] = (min_val, max_val)
+                        
 
                         # Aggiorna barra
                         progress_bar.update(1)
@@ -658,6 +659,7 @@ class MITBIHDataset(Dataset):
         return {
             'x1': self.__index_mapping[idx]['x1'].detach().clone(),  # Segnale ECG
             'x2': self.__index_mapping[idx]['x2'].detach().clone(),  # Spettrogramma
+            'x3': self.__index_mapping[idx]['x3'].detach().clone(),  # Spettrogramma non normalizzato
             'y': self.__index_mapping[idx]['y'].detach().clone(),    # Etichetta
             's': self.__index_mapping[idx]['s']  # Indica se il campione è sintetico
         }
@@ -689,6 +691,7 @@ class MITBIHDataset(Dataset):
         for _, windows_dict in self.__data.items():
             for _, w_dict in windows_dict.items():
                 self.__index_mapping.append(w_dict)
+        
                 
         # Calcola i pesi delle classi solo se in modalità TRAINING
         if self._mode == DatasetMode.TRAINING:
@@ -766,57 +769,57 @@ class MITBIHDataset(Dataset):
         plt.tight_layout(rect=[0, 0, 1, 0.96]) # Regola il layout per il titolo
         plt.show()
 
-    # def show_sample_spectrogram(self, index: int):
-    #     """
-    #     Mostra il segnale del dataset e il relativo spettrogramma in dB (non normalizzato)
-    #     per un dato indice. I due grafici sono visualizzati in un'unica finestra.
-    #     """
-    #     if index >= len(self.__index_mapping) or index < 0:
-    #         raise IndexError(f"Indice fuori range. L'indice deve essere compreso tra 0 e {len(self.__index_mapping) - 1}.")
+    def show_sample_spectrogram_norm(self, index: int):
+        """
+        Mostra il segnale del dataset e il relativo spettrogramma in dB (non normalizzato)
+        per un dato indice. I due grafici sono visualizzati in un'unica finestra.
+        """
+        if index >= len(self.__index_mapping) or index < 0:
+            raise IndexError(f"Indice fuori range. L'indice deve essere compreso tra 0 e {len(self.__index_mapping) - 1}.")
         
-    #     # Estrai i dati per l'indice specificato
-    #     data_point = self.__index_mapping[index]
-    #     signal = data_point['x1']
-    #     spectrogram_norm = data_point['x2']   # spettrogramma normalizzato (0–1)
-    #     label = data_point['y']
-    #     is_synthetic = data_point['s']
-    #     min_val, max_val = data_point.get("x2_range", (0, 1))  # range log originale
+        # Estrai i dati per l'indice specificato
+        data_point = self.__index_mapping[index]
+        signal = data_point['x1']
+        spectrogram_norm = data_point['x2']   # spettrogramma normalizzato (0–1)
+        label = data_point['y']
+        is_synthetic = data_point['s']
+        min_val, max_val = data_point.get("x2_range", (0, 1))  # range log originale
         
-    #     # Verifica che i dati siano disponibili
-    #     if signal is None or spectrogram_norm is None:
-    #         raise ValueError("I dati del segnale o dello spettrogramma non sono disponibili per questo indice. Assicurati che il dataset sia stato inizializzato correttamente.")
+        # Verifica che i dati siano disponibili
+        if signal is None or spectrogram_norm is None:
+            raise ValueError("I dati del segnale o dello spettrogramma non sono disponibili per questo indice. Assicurati che il dataset sia stato inizializzato correttamente.")
             
-    #     # Converti i dati da PyTorch a NumPy per il plotting
-    #     signal_np = signal.squeeze().numpy()
-    #     spectrogram_norm_np = spectrogram_norm.squeeze().numpy()
+        # Converti i dati da PyTorch a NumPy per il plotting
+        signal_np = signal.squeeze().numpy()
+        spectrogram_norm_np = spectrogram_norm.squeeze().numpy()
         
-    #     # ❌ annulla la normalizzazione 0–1 → recupera spettrogramma in dB
-    #     spectrogram_db = spectrogram_norm_np * (max_val - min_val) + min_val
+        # ❌ annulla la normalizzazione 0–1 → recupera spettrogramma in dB
+        #spectrogram_db = spectrogram_norm_np * (max_val - min_val) + min_val
         
-    #     # Crea una figura con due sottotracciati
-    #     fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(10, 8))
+        # Crea una figura con due sottotracciati
+        fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(10, 8))
         
-    #     # Titolo generale
-    #     synthetic_text = " (sintetico)" if is_synthetic else ""
-    #     fig.suptitle(f"Sample {index} - Categoria: {ArrhythmiaType.toEnum(label)}{synthetic_text}", fontsize=16)
+        # Titolo generale
+        synthetic_text = " (sintetico)" if is_synthetic else ""
+        fig.suptitle(f"Sample {index} - Categoria: {ArrhythmiaType.toEnum(label)}{synthetic_text}", fontsize=16)
         
-    #     # Plot del segnale
-    #     ax1.plot(signal_np, color="red")
-    #     ax1.set_title("Segnale ECG")
-    #     ax1.set_xlabel("Campioni")
-    #     ax1.set_ylabel("Ampiezza Normalizzata")
-    #     ax1.grid(True)
+        # Plot del segnale
+        ax1.plot(signal_np, color="red")
+        ax1.set_title("Segnale ECG")
+        ax1.set_xlabel("Campioni")
+        ax1.set_ylabel("Ampiezza Normalizzata")
+        ax1.grid(True)
         
-    #     # Plot dello spettrogramma in scala logaritmica (dB)
-    #     im = ax2.imshow(spectrogram_db, aspect='auto', origin='lower', cmap='inferno')
-    #     ax2.set_title("Spettrogramma (dB)")
-    #     ax2.set_xlabel("Frame")
-    #     ax2.set_ylabel("Frequenza (bin)")
+        # Plot dello spettrogramma in scala logaritmica (dB)
+        im = ax2.imshow(spectrogram_norm_np, aspect='auto', origin='lower', cmap='inferno')
+        ax2.set_title("Spettrogramma (dB)")
+        ax2.set_xlabel("Frame")
+        ax2.set_ylabel("Frequenza (bin)")
         
-    #     # Aggiungi colorbar con scala dB
-    #     cbar = fig.colorbar(im, ax=ax2)
-    #     cbar.set_label("Intensità (dB)")
+        # Aggiungi colorbar con scala dB
+        cbar = fig.colorbar(im, ax=ax2)
+        cbar.set_label("Intensità (dB)")
         
-    #     plt.tight_layout(rect=[0, 0, 1, 0.96]) # Regola il layout per il titolo
-    #     plt.show()
+        plt.tight_layout(rect=[0, 0, 1, 0.96]) # Regola il layout per il titolo
+        plt.show()
 
