@@ -24,6 +24,13 @@ from trainer import Trainer
 from dataset.datamodule import Mitbih_datamodule
 from dataset.dataset import ArrhythmiaType, SplitMode
 
+from nn_models.ECG_CNN import ECG_CNN_2D, ECG_CNN_1D
+from nn_models.resnet import ResNet18,ResNet34
+from nn_models.resent_1D import ResNet18_1D, ResNet34_1D
+from nn_models.visionTransformer import ViT1,ViT2,ViT1_1D
+from nn_models.segFormer import SegFormer
+from trainer import Schedulers
+
 
 def check_pytorch_cuda() -> bool:
     
@@ -48,12 +55,7 @@ def check_pytorch_cuda() -> bool:
 
 def main():
     
-    from nn_models.ECG_CNN import ECG_CNN_2D, ECG_CNN_1D
-    from nn_models.resnet import ResNet18,ResNet34
-    from nn_models.resent_1D import ResNet18_1D, ResNet34_1D
-    from nn_models.visionTransformer import ViT1,ViT2,ViT1_1D
-    from nn_models.segFormer import SegFormer
-    from trainer import Schedulers
+    
 
     parser = argparse.ArgumentParser()
     parser.add_argument("--mode", type=str, default="normal", choices=["normal", "jupyter"])
